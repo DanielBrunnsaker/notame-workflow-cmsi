@@ -1,0 +1,24 @@
+# Data and outputs — not for version control
+intermediates/
+output/
+*.xlsx
+*.csv
+*.rds
+*.RData
+
+# Logs
+*.log
+log.txt
+
+# R environment
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+renv/library/
+renv/staging/
+renv/python/
+
+# OS
+.DS_Store
+Thumbs.db
