@@ -53,9 +53,13 @@ CORRECTION_METHODS <- c("loess_combat", "notame", "pmp_qcrsc", "waveica")
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
 RUV_K <- 3
 
-# LOESS span for drift correction (used by loess_combat, loess_limma, pmp_qcrsc).
+# TODO: Add span-control variable for QC-RSC
+# QCRSC_SPAN <- 0
+
+# LOESS span for drift correction (used by loess_combat, loess_limma).
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
 LOESS_SPAN <- 0.75
+
 
 # Output folder sent to the downstream analyst
 output_dir <- file.path("output", polarity)
@@ -216,7 +220,7 @@ for (method in CORRECTION_METHODS) {
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir)
 
-  # Remove ltQC 
+  # Remove ltQC, not needed for final output
   combined <- combined[, colData(combined)$QC != "ltQC"]
 
   # Remove RUV W-factor columns, not needed for final output
