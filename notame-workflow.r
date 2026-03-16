@@ -29,15 +29,18 @@ in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_50_45.xlsx" # 
 out_xlsx   <- file.path("intermediates", polarity, "notame_rev.xlsx")
 interdir   <- file.path("intermediates", polarity)
 
+# TODO: Change this to be an external folder, not included in the repo
+# project_folder = 
+
 # Minimum fraction of QC samples a feature must be detected in (globally)
-QC_DETECTION_LIMIT <- 0.60
+QC_DETECTION_LIMIT <- 0.60 # Not sure i want to go lower than this due to imputation-issues
 
 # Minimum fraction of biological samples a feature must be detected in (globally)
-SAMPLE_DETECTION_LIMIT <- 0.40
+SAMPLE_DETECTION_LIMIT <- 0.40 # Not sure i want to go lower than this due to imputation-issues 
 
 # Blank filter: remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
 # Set to NULL to skip.
-BLANK_RATIO <- 1
+BLANK_RATIO <- 1 # This is very low, should default to 3x more generally?
 
 # Correction methods to run. All listed methods are executed and saved to
 # separate subfolders. A comparison table is printed at the end.
@@ -45,7 +48,7 @@ BLANK_RATIO <- 1
 #   "loess_combat"  — per-batch LOESS + ComBat
 #   "loess_limma"   — per-batch LOESS + limma::removeBatchEffect
 #   "pmp_qcrsc"     — pmp::QCRSC
-#   "waveica"       — WaveICA2.0
+#   "waveica"       — WaveICA2.0 - need to look over the defauls on this one, works horribly atm
 #   "linear_combat" — per-batch linear drift correction + ComBat
 #   "linear_limma"  — per-batch linear drift correction + limma::removeBatchEffect
 CORRECTION_METHODS <- c("loess_combat", "notame", "pmp_qcrsc", "waveica")
@@ -60,7 +63,6 @@ RUV_K <- 3
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
 LOESS_SPAN <- 0.75
 
-
 # Output folder sent to the downstream analyst
 output_dir <- file.path("output", polarity)
 
@@ -68,6 +70,8 @@ output_dir <- file.path("output", polarity)
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) CONVERT & IMPORT
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Note that this msdial_to_notame function is a bit hacky. Inspect output.
 
 dir.create(interdir, showWarnings = FALSE, recursive = TRUE)
 
