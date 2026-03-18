@@ -19,6 +19,9 @@ renv/library/
 renv/staging/
 renv/python/
 
+# Docker
+*.tar
+
 # OS
 .DS_Store
 Thumbs.db

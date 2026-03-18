@@ -19,31 +19,73 @@ source("R/correction_methods.R")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SETTINGS
+# Environment variables override hardcoded defaults when set.
 # ─────────────────────────────────────────────────────────────────────────────
 
-project_folder <- "C:/Projects/PR202/Processed"
+get_env <- function(var, default) {
+  val <- Sys.getenv(var, unset = NA)
+  if (is.na(val) || val == "") default else val
+}
 
-#polarity <- "NEG"   # "POS" or "NEG" — used to namespace all output folders
-polarity <- "POS"   # "POS" or "NEG" — used to namespace all output folders
-#in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_47_29.xlsx" # positive
-#in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_50_45.xlsx" # negative
-in_xlsx <- "C:/Projects/PR202/2025-04-17_RP_POS_Pr202.xlsx"
+if ("--help" %in% commandArgs(trailingOnly = TRUE)) {
+  cat("
+Usage: Rscript notame-workflow.r [--help]
 
-out_xlsx   <- file.path(project_folder,"intermediates", polarity, "notame_rev.xlsx")
-interdir   <- file.path(project_folder,"intermediates", polarity)
+Environment variables (all optional, hardcoded defaults shown):
+
+  IN_XLSX               Path to the MS-DIAL .xlsx export
+                        Default: C:/Projects/PR202/2025-04-17_RP_POS_Pr202.xlsx
+
+  PROJECT_FOLDER        Root output directory (intermediates/ and output/ written here)
+                        Default: C:/Projects/PR202/Processed
+
+  POLARITY              Ionisation polarity, used to namespace output subfolders
+                        Default: POS
+                        Values:  POS | NEG
+
+  CORRECTION_METHODS    Comma-separated list of correction methods to run
+                        Default: loess_combat,notame,pmp_qcrsc,waveica
+                        Values:  notame | loess_combat | loess_limma |
+                                 pmp_qcrsc | waveica | linear_combat | linear_limma
+
+  QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
+                        Default: 0.60
+
+  SAMPLE_DETECTION_LIMIT  Min fraction of biological samples a feature must be detected in
+                        Default: 0.40
+
+  BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(Blank)
+                        Default: 1
+
+  RUV_K                 Number of unwanted-variation factors for RUV (notame method only)
+                        Default: 3
+
+  LOESS_SPAN            LOESS smoothing span for drift correction (loess_* methods)
+                        Default: 0.75
+
+")
+  quit(status = 0)
+}
+
+project_folder <- get_env("PROJECT_FOLDER", "C:/Projects/PR202/Processed")
+polarity       <- get_env("POLARITY",       "POS")   # "POS" or "NEG" — used to namespace all output folders
+in_xlsx        <- get_env("IN_XLSX",        "C:/Projects/PR202/2025-04-17_RP_POS_Pr202.xlsx")
+
+out_xlsx   <- file.path(project_folder, "intermediates", polarity, "notame_rev.xlsx")
+interdir   <- file.path(project_folder, "intermediates", polarity)
 
 # Output folder sent to the downstream analyst
-output_dir <- file.path(project_folder,"output", polarity)
+output_dir <- file.path(project_folder, "output", polarity)
 
 # Minimum fraction of QC samples a feature must be detected in (globally)
-QC_DETECTION_LIMIT <- 0.60 # Not sure i want to go lower than this due to imputation-issues
+QC_DETECTION_LIMIT <- as.numeric(get_env("QC_DETECTION_LIMIT", "0.60")) # Not sure i want to go lower than this due to imputation-issues
 
 # Minimum fraction of biological samples a feature must be detected in (globally)
-SAMPLE_DETECTION_LIMIT <- 0.40 # Not sure i want to go lower than this due to imputation-issues 
+SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.40")) # Not sure i want to go lower than this due to imputation-issues
 
 # Blank filter: remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
 # Set to NULL to skip.
-BLANK_RATIO <- 1 # This is very low, should default to 3x more generally?
+BLANK_RATIO <- as.numeric(get_env("BLANK_RATIO", "1")) # This is very low, should default to 3x more generally?
 
 # Correction methods to run. All listed methods are executed and saved to
 # separate subfolders. A comparison table is printed at the end.
@@ -54,17 +96,17 @@ BLANK_RATIO <- 1 # This is very low, should default to 3x more generally?
 #   "waveica"       — WaveICA2.0 - need to look over the defauls on this one, works horribly atm
 #   "linear_combat" — per-batch linear drift correction + ComBat
 #   "linear_limma"  — per-batch linear drift correction + limma::removeBatchEffect
-CORRECTION_METHODS <- c("loess_combat", "notame", "pmp_qcrsc", "waveica")
+CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "loess_combat,notame,pmp_qcrsc,waveica"), ",")[[1]]
 
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
-RUV_K <- 3
+RUV_K <- as.integer(get_env("RUV_K", "3"))
 
 # TODO: Add span-control variable for QC-RSC
 # QCRSC_SPAN <- 0
 
 # LOESS span for drift correction (used by loess_combat, loess_limma).
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
-LOESS_SPAN <- 0.75
+LOESS_SPAN <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 
 
 
