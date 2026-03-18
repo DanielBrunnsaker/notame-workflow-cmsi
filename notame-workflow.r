@@ -237,6 +237,7 @@ for (method in CORRECTION_METHODS) {
   # Cluster and write final output
   message("==> Clustering and writing output: ", method)
 
+  combined  <- add_batch_qc_metrics(combined)
   clustered <- cluster_features(combined, all_features = TRUE)
   clustered  <- compress_clusters(clustered)
 

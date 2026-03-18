@@ -73,6 +73,34 @@ save_correction_summary <- function(se, method, interdir) {
 }
 
 
+# Add per-batch QC RSD columns to rowData.
+# Computes robust RSD (MAD / median) of QC samples within each batch and
+# appends columns named RSD_r_B{batch} to rowData(se).
+# These complement the global RSD_r / D_ratio_r already added by assess_quality,
+# giving downstream analysts per-batch signal to judge whether to drop a batch.
+add_batch_qc_metrics <- function(se) {
+  batches <- sort(unique(colData(se)$Batch))
+  mat     <- assay(se, 1)
+
+  for (b in batches) {
+    idx <- which(colData(se)$Batch == b & colData(se)$QC == "QC")
+    col <- paste0("RSD_r_B", b)
+
+    if (length(idx) < 2) {
+      rowData(se)[[col]] <- NA_real_
+    } else {
+      rowData(se)[[col]] <- apply(mat[, idx, drop = FALSE], 1, function(x) {
+        ok <- !is.na(x)
+        if (sum(ok) < 2) return(NA_real_)
+        mad(x[ok]) / median(x[ok])
+      })
+    }
+  }
+
+  se
+}
+
+
 # Load all qc_summary_*.csv files from interdir and print a ranked comparison.
 compare_corrections <- function(interdir) {
   files <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
