@@ -1476,47 +1476,6 @@
       "Author": "Michel Lang [cre, aut] (<https://orcid.org/0000-0001-9754-0393>), Duncan Murdoch [aut], R Core Team [aut]",
       "Repository": "RSPM"
     },
-    "batchCorr": {
-      "Package": "batchCorr",
-      "Version": "1.0.0",
-      "Source": "Bioconductor",
-      "Type": "Package",
-      "Title": "Within And Between Batch Correction Of LC-MS Metabolomics Data",
-      "Date": "2020-05-29",
-      "Authors@R": "c( person(\"Anton\", \"Ribbenstedt\", email = \"parasitetwin@gmail.com\", role = c(\"cre\"), comment = c(ORCID = \"0000-0002-9985-5644\")), person(\"Carl\", \"Brunius\", email = \"carl.brunius@chalmers.se\", role = c(\"aut\"), comment = c(ORCID = \"0000-0003-3957-870X\")), person(\"Vilhelm\", \"Suksi\", role = c(\"aut\")))",
-      "Description": "From the perspective of metabolites as the continuation of the central dogma of biology, metabolomics provides the closest link to many phenotypes of interest. This makes metabolomics research promising in teasing apart the complexities of living systems. However, due to experimental reasons, the data includes non-biological variation which limits quality and reproducibility, especially if the data is obtained from several batches. The batchCorr package reduces unwanted variation by way of between-batch alignment, within-batch drift correction and between-batch normalization using batch-specific quality control samples and long-term reference QC samples. Please see the associated article for more thorough descriptions of algorithms.",
-      "License": "GPL-2",
-      "biocViews": "BiomedicalInformatics, Metabolomics, MassSpectrometry, BatchEffect, Normalization, QualityControl",
-      "Depends": [
-        "R (>= 4.4.0)",
-        "SummarizedExperiment"
-      ],
-      "Imports": [
-        "reshape",
-        "mclust",
-        "BiocParallel",
-        "methods"
-      ],
-      "Suggests": [
-        "BiocStyle",
-        "knitr",
-        "testthat"
-      ],
-      "LazyData": "FALSE",
-      "RoxygenNote": "7.3.2",
-      "Encoding": "UTF-8",
-      "URL": "https://github.com/MetaboComp/batchCorr",
-      "BugReports": "https://github.com/MetaboComp/batchCorr/issues",
-      "VignetteBuilder": "knitr",
-      "Config/pak/sysreqs": "zlib1g-dev",
-      "Repository": "https://bioc-release.r-universe.dev",
-      "RemoteUrl": "https://github.com/bioc/batchCorr",
-      "RemoteRef": "RELEASE_3_22",
-      "RemoteSha": "25f7e5bee21c90efa8bf73c2f10753103ec469fb",
-      "NeedsCompilation": "no",
-      "Author": "Anton Ribbenstedt [cre] (ORCID: <https://orcid.org/0000-0002-9985-5644>), Carl Brunius [aut] (ORCID: <https://orcid.org/0000-0003-3957-870X>), Vilhelm Suksi [aut]",
-      "Maintainer": "Anton Ribbenstedt <parasitetwin@gmail.com>"
-    },
     "beeswarm": {
       "Package": "beeswarm",
       "Version": "0.4.0",
@@ -3184,41 +3143,6 @@
       "Repository": "CRAN",
       "Encoding": "UTF-8"
     },
-    "mclust": {
-      "Package": "mclust",
-      "Version": "6.1.2",
-      "Source": "Repository",
-      "Date": "2025-10-30",
-      "Title": "Gaussian Mixture Modelling for Model-Based Clustering, Classification, and Density Estimation",
-      "Description": "Gaussian finite mixture models fitted via EM algorithm for model-based clustering, classification, and density estimation,  including Bayesian regularization, dimension reduction for  visualisation, and resampling-based inference.",
-      "Authors@R": "c(person(\"Chris\", \"Fraley\", role = \"aut\"), person(\"Adrian E.\", \"Raftery\", role = \"aut\", comment = c(ORCID = \"0000-0002-6589-301X\")), person(\"Luca\", \"Scrucca\", role = c(\"aut\", \"cre\"), email = \"luca.scrucca@unibo.it\", comment = c(ORCID = \"0000-0003-3826-0484\")), person(\"Thomas Brendan\", \"Murphy\", role = \"ctb\", comment = c(ORCID = \"0000-0002-5668-7046\")), person(\"Michael\", \"Fop\", role = \"ctb\", comment = c(ORCID = \"0000-0003-3936-2757\")))",
-      "Depends": [
-        "R (>= 3.0)"
-      ],
-      "Imports": [
-        "stats",
-        "utils",
-        "graphics",
-        "grDevices"
-      ],
-      "Suggests": [
-        "knitr (>= 1.4)",
-        "rmarkdown (>= 2.10)",
-        "mix (>= 1.0)",
-        "geometry (>= 0.4)",
-        "MASS"
-      ],
-      "License": "GPL (>= 2)",
-      "URL": "https://mclust-org.github.io/mclust/",
-      "VignetteBuilder": "knitr",
-      "Repository": "CRAN",
-      "ByteCompile": "true",
-      "NeedsCompilation": "yes",
-      "LazyData": "yes",
-      "Encoding": "UTF-8",
-      "Author": "Chris Fraley [aut], Adrian E. Raftery [aut] (ORCID: <https://orcid.org/0000-0002-6589-301X>), Luca Scrucca [aut, cre] (ORCID: <https://orcid.org/0000-0003-3826-0484>), Thomas Brendan Murphy [ctb] (ORCID: <https://orcid.org/0000-0002-5668-7046>), Michael Fop [ctb] (ORCID: <https://orcid.org/0000-0003-3936-2757>)",
-      "Maintainer": "Luca Scrucca <luca.scrucca@unibo.it>"
-    },
     "memoise": {
       "Package": "memoise",
       "Version": "2.0.1",
@@ -4061,28 +3985,6 @@
       "Author": "Kevin Ushey [aut, cre] (ORCID: <https://orcid.org/0000-0003-2880-7407>), Hadley Wickham [aut] (ORCID: <https://orcid.org/0000-0003-4757-117X>), Posit Software, PBC [cph, fnd]",
       "Maintainer": "Kevin Ushey <kevin@rstudio.com>",
       "Repository": "RSPM"
-    },
-    "reshape": {
-      "Package": "reshape",
-      "Version": "0.8.10",
-      "Source": "Repository",
-      "Title": "Flexibly Reshape Data",
-      "Description": "Flexibly restructure and aggregate data using  just two functions: melt and cast.",
-      "Authors@R": "person(\"Hadley\", \"Wickham\", , \"hadley@rstudio.com\", c(\"aut\", \"cre\"))",
-      "URL": "http://had.co.nz/reshape",
-      "Depends": [
-        "R (>= 2.6.1)"
-      ],
-      "Imports": [
-        "plyr"
-      ],
-      "License": "MIT + file LICENSE",
-      "LazyData": "true",
-      "NeedsCompilation": "no",
-      "Author": "Hadley Wickham [aut, cre]",
-      "Maintainer": "Hadley Wickham <hadley@rstudio.com>",
-      "Repository": "CRAN",
-      "Encoding": "UTF-8"
     },
     "reshape2": {
       "Package": "reshape2",

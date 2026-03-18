@@ -21,16 +21,19 @@ source("R/correction_methods.R")
 # SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 
-polarity <- "NEG"   # "POS" or "NEG" — used to namespace all output folders
-#polarity <- "POS"   # "POS" or "NEG" — used to namespace all output folders
+project_folder <- "C:/Projects/PR202/Processed"
+
+#polarity <- "NEG"   # "POS" or "NEG" — used to namespace all output folders
+polarity <- "POS"   # "POS" or "NEG" — used to namespace all output folders
 #in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_47_29.xlsx" # positive
-in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_50_45.xlsx" # negative
+#in_xlsx <- "C:/Projects/NAPFL/MSDIAL-exports/Area_0_2026_03_05_07_50_45.xlsx" # negative
+in_xlsx <- "C:/Projects/PR202/2025-04-17_RP_POS_Pr202.xlsx"
 
-out_xlsx   <- file.path("intermediates", polarity, "notame_rev.xlsx")
-interdir   <- file.path("intermediates", polarity)
+out_xlsx   <- file.path(project_folder,"intermediates", polarity, "notame_rev.xlsx")
+interdir   <- file.path(project_folder,"intermediates", polarity)
 
-# TODO: Change this to be an external folder, not included in the repo
-# project_folder = 
+# Output folder sent to the downstream analyst
+output_dir <- file.path(project_folder,"output", polarity)
 
 # Minimum fraction of QC samples a feature must be detected in (globally)
 QC_DETECTION_LIMIT <- 0.60 # Not sure i want to go lower than this due to imputation-issues
@@ -63,8 +66,7 @@ RUV_K <- 3
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
 LOESS_SPAN <- 0.75
 
-# Output folder sent to the downstream analyst
-output_dir <- file.path("output", polarity)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,7 +189,7 @@ for (method in CORRECTION_METHODS) {
   method_out <- file.path(output_dir, method)
   dir.create(file.path(method_out, "QC_plots"), showWarnings = FALSE, recursive = TRUE)
 
-  # ── Correction ──────────────────────────────────────────────────────────────
+  # Correction ──────────────────────────────────────────────────────────────
   result <- tryCatch({
     switch(method,
       notame        = correct_notame(data, RUV_K),

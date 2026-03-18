@@ -127,7 +127,7 @@ correct_pmp_qcrsc <- function(data) {
 
   library(pmp)
 
-  message("==> Drift correction + batch correction (pmp QCRSC)")
+  message("==> Drift correction + batch correction (pmp QC-RSC)")
 
   # ltQC remapped to "Sample" so pmp does not try to use it as a QC reference, because package stupid
   classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
@@ -161,7 +161,7 @@ correct_waveica <- function(data) {
     Injection_Order = as.numeric(colData(data)$Injection_order),
     alpha           = 0.05,
     Cutoff          = 0.10,
-    K               = 20
+    K               = 20  # Default parameter, but this likely needs to be chagned for this method to even be viable
   )
   assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
   list(pre = data, post = data)
