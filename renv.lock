@@ -2691,6 +2691,12 @@
       "Maintainer": "Thomas Lin Pedersen <thomas.pedersen@posit.co>",
       "Repository": "CRAN"
     },
+    "hexbin": {
+      "Package": "hexbin",
+      "Version": "1.28.5",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "httr": {
       "Package": "httr",
       "Version": "1.4.8",
