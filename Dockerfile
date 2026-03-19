@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
+ENV RENV_PATHS_LIBRARY=/renv/library
+
 WORKDIR /workflow
 COPY renv.lock renv.lock
 RUN Rscript -e "install.packages('renv'); options(BiocManager.version = '3.22'); renv::restore()"
