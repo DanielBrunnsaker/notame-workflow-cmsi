@@ -211,10 +211,9 @@ if (any(bad_inj)) {
 
 # Pre-correction QC plots
 dir.create(file.path(output_dir, "pre_correction"), showWarnings = FALSE, recursive = TRUE)
-save_QC_plots(
-  data,
-  prefix = file.path(output_dir, "pre_correction/"),
-  id     = "Sample_ID"
+tryCatch(
+  save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID"),
+  error = function(e) message("WARNING: save_QC_plots failed (pre-correction): ", conditionMessage(e))
 )
 
 
@@ -262,10 +261,16 @@ for (method in CORRECTION_METHODS) {
   if (!is_single_step)
     write_to_excel(pre, file = file.path(method_out, "data_pre_batch.xlsx"))
 
-  # QC plots: pre and post batch correction 
-  save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_batch_"), id = "Sample_ID")
+  # QC plots: pre and post batch correction
+  tryCatch(
+    save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_batch_"), id = "Sample_ID"),
+    error = function(e) message("WARNING: save_QC_plots failed (post-batch, ", method, "): ", conditionMessage(e))
+  )
   if (!is_single_step)
-    save_QC_plots(pre, prefix = file.path(method_out, "QC_plots/pre_batch_"), id = "Sample_ID")
+    tryCatch(
+      save_QC_plots(pre, prefix = file.path(method_out, "QC_plots/pre_batch_"), id = "Sample_ID"),
+      error = function(e) message("WARNING: save_QC_plots failed (pre-batch, ", method, "): ", conditionMessage(e))
+    )
 
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir)
