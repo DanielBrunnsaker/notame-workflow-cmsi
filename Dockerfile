@@ -18,7 +18,7 @@ ENV RENV_PATHS_LIBRARY=/renv/library
 
 WORKDIR /workflow
 COPY renv.lock renv.lock
-RUN Rscript -e "install.packages('renv'); options(BiocManager.version = '3.22'); renv::restore()"
+RUN Rscript -e "install.packages('renv'); options(BiocManager.version = '3.22'); renv::restore(prompt = FALSE)"
 
 COPY . .
 ENTRYPOINT ["Rscript", "notame-workflow.r"]
