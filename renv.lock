@@ -970,6 +970,12 @@
       "Maintainer": "Georgi N. Boshnakov <georgi.boshnakov@manchester.ac.uk>",
       "Repository": "CRAN"
     },
+    "Rtsne": {
+      "Package": "Rtsne",
+      "Version": "0.17",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "S4Arrays": {
       "Package": "S4Arrays",
       "Version": "1.10.1",
