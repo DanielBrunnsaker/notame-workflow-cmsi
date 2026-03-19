@@ -10,7 +10,7 @@ correct_notame <- function(data, ruv_k) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
   pre <- combined
 
   message("==> Batch correction (RUV, k=", ruv_k, ")")
@@ -33,7 +33,7 @@ correct_loess_combat <- function(data, loess_span) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
   pre <- combined
 
   message("==> Between-batch correction (ComBat)")
@@ -59,7 +59,7 @@ correct_loess_limma <- function(data, loess_span) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
   pre <- combined
 
   message("==> Between-batch correction (limma::removeBatchEffect)")
@@ -85,7 +85,7 @@ correct_linear_combat <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
   pre <- combined
 
   message("==> Between-batch correction (ComBat)")
@@ -110,7 +110,7 @@ correct_linear_limma <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
   pre <- combined
 
   message("==> Between-batch correction (limma::removeBatchEffect)")
@@ -142,7 +142,7 @@ correct_pmp_qcrsc <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_rf(combined)
+  combined <- impute_rf(combined, parallelize = "variables")
 
   list(pre = combined, post = combined)
 }
@@ -152,7 +152,7 @@ correct_waveica <- function(data) {
   library(WaveICA2.0)
 
   message("==> Imputation (pre-WaveICA, required by algorithm)")
-  data <- impute_rf(data)
+  data <- impute_rf(data, parallelize = "variables")
 
   message("==> WaveICA2.0 correction")
   corrected_mat <- WaveICA_2.0(

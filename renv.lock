@@ -2752,6 +2752,12 @@
       "Repository": "CRAN",
       "Encoding": "UTF-8"
     },
+    "igraph": {
+      "Package": "igraph",
+      "Version": "2.2.2",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "impute": {
       "Package": "impute",
       "Version": "1.84.0",

@@ -10,12 +10,14 @@ library(notame)
 library(notameViz)
 library(notameStats)
 library(openxlsx)
+library(doParallel)
 
 source("R/msdial_to_notame.R")
 source("R/qc_metrics.R")
 source("R/drift_correction.R")
 source("R/correction_methods.R")
 
+registerDoParallel(cores = parallel::detectCores() - 1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SETTINGS
