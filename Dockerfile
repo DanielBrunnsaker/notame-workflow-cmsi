@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RENV_PATHS_LIBRARY=/renv/library
+ENV RENV_CONFIG_AUTOLOADER_ENABLED=FALSE
+ENV R_LIBS_SITE=/renv/library
 
 WORKDIR /workflow
 COPY renv.lock renv.lock
