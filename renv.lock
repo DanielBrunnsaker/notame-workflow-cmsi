@@ -864,6 +864,10 @@
       "Maintainer": "Kirill Müller <kirill@cynkra.com>",
       "Repository": "CRAN"
     },
+    "RUVSeq": {
+      "Package": "RUVSeq",
+      "Source": "Bioconductor"
+    },
     "Rcpp": {
       "Package": "Rcpp",
       "Version": "1.1.1",
