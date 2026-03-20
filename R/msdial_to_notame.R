@@ -152,7 +152,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     gsub(",", ".", as.character(col)))
 
   # Assemble notame output layout 
-  N_FEAT <- 9 # TODO: I dont like this magic number, remember to change
+  N_FEAT <- 9 # number of feature metadata columns (must match feat_header length)
 
   meta_row <- function(label, values)
     c(rep(NA_character_, N_FEAT - 1), label, as.character(values))

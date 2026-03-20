@@ -1488,6 +1488,12 @@
       "Author": "Michel Lang [cre, aut] (<https://orcid.org/0000-0001-9754-0393>), Duncan Murdoch [aut], R Core Team [aut]",
       "Repository": "RSPM"
     },
+    "batchCorr": {
+      "Package": "batchCorr",
+      "Version": "1.0.0",
+      "Source": "Repository",
+      "Repository": "BioCsoft"
+    },
     "beeswarm": {
       "Package": "beeswarm",
       "Version": "0.4.0",
@@ -3200,6 +3206,12 @@
       "Repository": "CRAN",
       "Encoding": "UTF-8"
     },
+    "mclust": {
+      "Package": "mclust",
+      "Version": "6.1.2",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "memoise": {
       "Package": "memoise",
       "Version": "2.0.1",
@@ -4042,6 +4054,12 @@
       "Author": "Kevin Ushey [aut, cre] (ORCID: <https://orcid.org/0000-0003-2880-7407>), Hadley Wickham [aut] (ORCID: <https://orcid.org/0000-0003-4757-117X>), Posit Software, PBC [cph, fnd]",
       "Maintainer": "Kevin Ushey <kevin@rstudio.com>",
       "Repository": "RSPM"
+    },
+    "reshape": {
+      "Package": "reshape",
+      "Version": "0.8.10",
+      "Source": "Repository",
+      "Repository": "CRAN"
     },
     "reshape2": {
       "Package": "reshape2",

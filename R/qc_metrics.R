@@ -59,9 +59,10 @@ save_correction_summary <- function(se, method, interdir) {
   summary_row <- data.frame(
     method            = method,
     n_features        = nrow(se),
-    ltqc_median_RSD_r = round(eval_ltqc(se),          4),
-    median_RSD_r      = round(median(rsd),             3),
-    pct_RSD_lt_30     = round(100 * mean(rsd < 0.30), 1),
+    ltqc_median_RSD_r = round(eval_ltqc(se),           4),
+    median_RSD_r      = round(median(rsd),              3),
+    median_D_ratio_r  = round(median(drat),             3),
+    pct_RSD_lt_30     = round(100 * mean(rsd < 0.30),  1),
     stringsAsFactors  = FALSE
   )
 
@@ -102,7 +103,8 @@ add_batch_qc_metrics <- function(se) {
 
 
 # Load all qc_summary_*.csv files from interdir and print a ranked comparison.
-compare_corrections <- function(interdir) {
+# Saves method_comparison.csv to output_dir.
+compare_corrections <- function(interdir, output_dir) {
   files <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
   if (length(files) == 0) {
     message("No qc_summary_*.csv files found in: ", interdir)
@@ -110,8 +112,13 @@ compare_corrections <- function(interdir) {
   }
   tbl      <- do.call(rbind, lapply(files, read.csv))
   rank_col <- if ("ltqc_median_RSD_r" %in% colnames(tbl)) "ltqc_median_RSD_r" else "median_RSD_r"
-  tbl      <- tbl[order(tbl[[rank_col]], tbl$median_RSD_r), ]
+  # Sort: uncorrected always first, then remaining ranked by metric
+  uncorr   <- tbl[tbl$method == "uncorrected", , drop = FALSE]
+  rest     <- tbl[tbl$method != "uncorrected", , drop = FALSE]
+  rest     <- rest[order(rest[[rank_col]], rest$median_RSD_r), ]
+  tbl      <- rbind(uncorr, rest)
   cat("\n=== Correction method comparison (best first, ranked by", rank_col, ") ===\n")
   print(tbl, row.names = FALSE)
+  write.csv(tbl, file.path(output_dir, "method_comparison.csv"), row.names = FALSE)
   invisible(tbl)
 }

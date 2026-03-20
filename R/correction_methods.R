@@ -123,6 +123,22 @@ correct_linear_limma <- function(data) {
 }
 
 
+correct_combat_only <- function(data) {
+  library(sva)
+
+  message("==> Imputation")
+  combined <- impute_rf(data, parallelize = "variables")
+
+  message("==> Batch correction (ComBat only, no drift correction)")
+  assay(combined, 1, withDimnames = FALSE) <- ComBat(
+    dat   = assay(combined, 1),
+    batch = as.factor(colData(combined)$Batch)
+  )
+
+  list(pre = combined, post = combined)
+}
+
+
 correct_pmp_qcrsc <- function(data) {
 
   library(pmp)
@@ -147,6 +163,83 @@ correct_pmp_qcrsc <- function(data) {
   list(pre = combined, post = combined)
 }
 
+correct_batchcorr <- function(data,
+                              G          = seq(5, 35, by = 10),
+                              modelNames = c("VVV", "VVE", "VEV", "VEE", "VEI", "VVI", "VII"),
+                              CVlimit    = 0.3,
+                              qualRatio  = 0.4) {
+  library(batchCorr)
+
+  message("==> Imputation (required by batchCorr)")
+  data <- impute_rf(data, parallelize = "variables")
+
+  # batchCorr expects samples × features matrix
+  mat  <- t(assay(data, "abundances"))
+  meta <- as.data.frame(colData(data))
+
+  message("==> Within-batch drift correction (batchCorr cluster-based spline)")
+  batches        <- unique(as.character(meta$Batch))
+  batch_corrObjs <- list()
+
+  for (b in batches) {
+    message("  Batch ", b)
+    idx   <- which(as.character(meta$Batch) == b)
+    bmat  <- mat[idx, , drop = FALSE]
+    bmeta <- meta[idx, ]
+    ord   <- order(bmeta$Injection_order)
+    bmat  <- bmat[ord, , drop = FALSE]
+    bmeta <- bmeta[ord, ]
+    sgrp  <- ifelse(bmeta$QC == "QC", "QC", "Sample")
+
+    bc <- tryCatch({
+      correctDrift(
+        peakTable    = bmat,
+        injections   = bmeta$Injection_order,
+        sampleGroups = sgrp,
+        QCID         = "QC",
+        G            = G,
+        modelNames   = modelNames,
+        CVlimit      = Inf,   # disable internal feature removal; pre-filtering already done
+        report       = FALSE
+      )
+    }, error = function(e) {
+      message("    WARNING: correctDrift failed for batch ", b, ": ", conditionMessage(e))
+      NULL
+    })
+
+    if (!is.null(bc)) batch_corrObjs[[b]] <- bc
+  }
+
+  if (length(batch_corrObjs) == 0) stop("correctDrift failed for all batches")
+
+  message("==> Merging batches")
+  merged <- mergeBatches(batch_corrObjs, qualRatio = qualRatio)
+
+  # Reconstruct SE from merged matrices (samples × features → features × samples)
+  kept_features <- colnames(merged$peakTableCorr)
+  kept_samples  <- rownames(merged$peakTableCorr)
+
+  pre <- data[kept_features, kept_samples]
+  assay(pre, "abundances", withDimnames = FALSE) <- t(merged$peakTableOrg[kept_samples, ])
+
+  message("==> Between-batch normalization (batchCorr normalizeBatches)")
+  sgrp_merged <- ifelse(colData(pre)$QC == "QC", "QC", "Sample")
+  norm_result <- normalizeBatches(
+    peakTableCorr = merged$peakTableCorr[kept_samples, ],
+    batches       = as.character(colData(pre)$Batch),
+    sampleGroup   = sgrp_merged,
+    refGroup      = "QC",
+    population    = "all",
+    CVlimit       = CVlimit
+  )
+
+  combined <- pre
+  assay(combined, "abundances", withDimnames = FALSE) <- t(norm_result$peakTable)
+
+  list(pre = pre, post = combined)
+}
+
+
 correct_waveica <- function(data) {
   # Install once with: remotes::install_github("dengkuistat/WaveICA2.0")
   library(WaveICA2.0)
@@ -161,7 +254,7 @@ correct_waveica <- function(data) {
     Injection_Order = as.numeric(colData(data)$Injection_order),
     alpha           = 0.05,
     Cutoff          = 0.10,
-    K               = 20  # Default parameter, but this likely needs to be chagned for this method to even be viable
+    K               = length(unique(colData(data)$Batch)) * 2
   )
   assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
   list(pre = data, post = data)

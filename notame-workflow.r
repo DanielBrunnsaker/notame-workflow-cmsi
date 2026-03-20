@@ -3,7 +3,7 @@
 # of the notame workflow. Makes use of notame functionalities 
 # for basic QC, but evaluates several different techniques for 
 # drift and batch correction.
-# Daniel Brunnsåker, 2026-13-15
+# Daniel Brunnsåker, 2026-03-20
 # ─────────────────────────────────────────────────────────────────────────────
 
 library(notame)
@@ -46,9 +46,9 @@ Environment variables (all optional, hardcoded defaults shown):
                         Values:  POS | NEG
 
   CORRECTION_METHODS    Comma-separated list of correction methods to run
-                        Default: loess_combat,notame,pmp_qcrsc,waveica
+                        Default: loess_combat,notame,pmp_qcrsc,waveica,batchcorr
                         Values:  notame | loess_combat | loess_limma |
-                                 pmp_qcrsc | waveica | linear_combat | linear_limma
+                                 pmp_qcrsc | combat_only | batchcorr | waveica | linear_combat | linear_limma
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -64,6 +64,10 @@ Environment variables (all optional, hardcoded defaults shown):
 
   LOESS_SPAN            LOESS smoothing span for drift correction (loess_* methods)
                         Default: 0.75
+
+  SAVE_PRE_CORRECTION_PLOTS  Save QC plots before any correction (can be slow with large datasets)
+                        Default: TRUE
+                        Values:  TRUE | FALSE
 
 ")
   quit(status = 0)
@@ -95,10 +99,12 @@ BLANK_RATIO <- as.numeric(get_env("BLANK_RATIO", "1")) # This is very low, shoul
 #   "loess_combat"  — per-batch LOESS + ComBat
 #   "loess_limma"   — per-batch LOESS + limma::removeBatchEffect
 #   "pmp_qcrsc"     — pmp::QCRSC
+#   "combat_only"   — ComBat batch correction only, no drift correction (baseline)
+#   "batchcorr"     — batchCorr cluster-based spline drift correction + QC normalization (Brunius et al.)
 #   "waveica"       — WaveICA2.0 - need to look over the defauls on this one, works horribly atm
 #   "linear_combat" — per-batch linear drift correction + ComBat
 #   "linear_limma"  — per-batch linear drift correction + limma::removeBatchEffect
-CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "loess_combat,notame,pmp_qcrsc,waveica"), ",")[[1]]
+CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "loess_combat,notame,pmp_qcrsc,waveica,batchcorr"), ",")[[1]]
 
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
 RUV_K <- as.integer(get_env("RUV_K", "3"))
@@ -109,6 +115,9 @@ RUV_K <- as.integer(get_env("RUV_K", "3"))
 # LOESS span for drift correction (used by loess_combat, loess_limma).
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
 LOESS_SPAN <- as.numeric(get_env("LOESS_SPAN", "0.75"))
+
+# Whether to save QC plots before any correction (can be slow with large datasets)
+SAVE_PRE_CORRECTION_PLOTS <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 
 
 
@@ -210,19 +219,28 @@ if (any(bad_inj)) {
 }
 
 # Pre-correction QC plots
-dir.create(file.path(output_dir, "pre_correction"), showWarnings = FALSE, recursive = TRUE)
-tryCatch(
-  save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID"),
-  error = function(e) message("WARNING: save_QC_plots failed (pre-correction): ", conditionMessage(e))
-)
+if (SAVE_PRE_CORRECTION_PLOTS) {
+  dir.create(file.path(output_dir, "pre_correction"), showWarnings = FALSE, recursive = TRUE)
+  tryCatch(
+    save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID"),
+    error = function(e) message("WARNING: save_QC_plots failed (pre-correction): ", conditionMessage(e))
+  )
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3) CORRECTION & OUTPUT (per method)
 # ─────────────────────────────────────────────────────────────────────────────
 
-old_summaries <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE) # if there are old summaries, remove
+old_summaries <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
 if (length(old_summaries) > 0) file.remove(old_summaries)
+
+# Save uncorrected baseline QC metrics for comparison
+save_correction_summary(assess_quality(data), method = "uncorrected", interdir = interdir)
+
+# Export sample metadata
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.csv"), row.names = FALSE)
 
 for (method in CORRECTION_METHODS) {
   message("\n############################################################")
@@ -239,10 +257,12 @@ for (method in CORRECTION_METHODS) {
       loess_combat  = correct_loess_combat(data, LOESS_SPAN),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
       pmp_qcrsc     = correct_pmp_qcrsc(data),
+      combat_only   = correct_combat_only(data),
+      batchcorr     = correct_batchcorr(data),
       waveica       = correct_waveica(data),
       linear_combat = correct_linear_combat(data),
       linear_limma  = correct_linear_limma(data),
-      stop("Unknown method '", method, "'. Valid: notame, loess_combat, loess_limma, pmp_qcrsc, waveica, linear_combat, linear_limma")
+      stop("Unknown method '", method, "'. Valid: notame, loess_combat, loess_limma, pmp_qcrsc, combat_only, batchcorr, waveica, linear_combat, linear_limma")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
@@ -252,25 +272,13 @@ for (method in CORRECTION_METHODS) {
 
   if (is.null(result)) next
 
-  pre            <- result$pre
-  combined       <- result$post
-  is_single_step <- identical(pre, combined)  # TRUE for pmp_qcrsc, waveica
+  combined <- result$post
 
-  # Save pre / post batch correction data 
-  write_to_excel(combined, file = file.path(method_out, "data_post_batch.xlsx"))
-  if (!is_single_step)
-    write_to_excel(pre, file = file.path(method_out, "data_pre_batch.xlsx"))
-
-  # QC plots: pre and post batch correction
+  # QC plots: post-correction only
   tryCatch(
-    save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_batch_"), id = "Sample_ID"),
-    error = function(e) message("WARNING: save_QC_plots failed (post-batch, ", method, "): ", conditionMessage(e))
+    save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_correction_"), id = "Sample_ID"),
+    error = function(e) message("WARNING: save_QC_plots failed (post-correction, ", method, "): ", conditionMessage(e))
   )
-  if (!is_single_step)
-    tryCatch(
-      save_QC_plots(pre, prefix = file.path(method_out, "QC_plots/pre_batch_"), id = "Sample_ID"),
-      error = function(e) message("WARNING: save_QC_plots failed (pre-batch, ", method, "): ", conditionMessage(e))
-    )
 
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir)
@@ -287,6 +295,11 @@ for (method in CORRECTION_METHODS) {
   message("==> Clustering and writing output: ", method)
 
   combined  <- add_batch_qc_metrics(combined)
+
+  # Save full (unclustered) peak table with QC metrics
+  write_feature_table(combined,  file = file.path(method_out, "feature_table_full.xlsx"))
+  write_feature_info(combined,   file = file.path(method_out, "feature_info_full.xlsx"))
+
   clustered <- cluster_features(combined, all_features = TRUE)
   clustered  <- compress_clusters(clustered)
 
@@ -294,8 +307,6 @@ for (method in CORRECTION_METHODS) {
   write_feature_info(clustered,  file = file.path(method_out, "feature_info.xlsx"))
 }
 
-# Print ranked comparison of all methods
-# TODO: save this as a CSV or something
-compare_corrections(interdir)
+compare_corrections(interdir, output_dir)
 
 message("==> FINISHED. Output at: ", output_dir)
