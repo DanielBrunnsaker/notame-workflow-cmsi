@@ -866,7 +866,9 @@
     },
     "RUVSeq": {
       "Package": "RUVSeq",
-      "Source": "Bioconductor"
+      "Version": "1.44.0",
+      "Source": "Repository",
+      "Repository": "BioCsoft"
     },
     "Rcpp": {
       "Package": "Rcpp",
