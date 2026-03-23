@@ -58,6 +58,7 @@ Environment variables (all optional, hardcoded defaults shown):
 
   BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(Blank)
                         Default: 1
+                        Set to "none" to disable blank filtering entirely
 
   RUV_K                 Number of unwanted-variation factors for RUV (notame method only)
                         Default: 3
@@ -98,8 +99,11 @@ QC_DETECTION_LIMIT <- as.numeric(get_env("QC_DETECTION_LIMIT", "0.60")) # Not su
 SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.40")) # Not sure i want to go lower than this due to imputation-issues
 
 # Blank filter: remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
-# Set to NULL to skip.
-BLANK_RATIO <- as.numeric(get_env("BLANK_RATIO", "1")) # This is very low, should default to 3x more generally?
+# Set BLANK_RATIO=none to skip.
+blank_ratio_env <- Sys.getenv("BLANK_RATIO", unset = "")
+BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip")) NA_real_ else
+               if (blank_ratio_env == "") 1 else
+               as.numeric(blank_ratio_env)
 
 # Low-intensity filter: remove features where the Nth percentile of abundance
 # (NAs treated as 0) is below this threshold. Alternative to blank filtering.
@@ -172,7 +176,7 @@ data <- mark_nas(data, value = 0)
 
 # Blank filter: keep features where mean sample abundance > BLANK_RATIO * mean blank abundance.
 n_before <- nrow(data)
-if (!is.null(BLANK_RATIO)) {
+if (!is.na(BLANK_RATIO)) {
   blank_idx <- which(colData(data)$QC == "Blank")
   if (length(blank_idx) > 0) {
     sample_idx   <- which(colData(data)$QC == "Sample")
