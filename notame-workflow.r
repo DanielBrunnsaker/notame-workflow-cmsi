@@ -58,7 +58,7 @@ Environment variables (all optional, hardcoded defaults shown):
 
   BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(Blank)
                         Default: 1
-                        Set to "none" to disable blank filtering entirely
+                        Set to none to disable blank filtering entirely
 
   RUV_K                 Number of unwanted-variation factors for RUV (notame method only)
                         Default: 3
@@ -96,7 +96,7 @@ output_dir <- file.path(project_folder, "output", polarity)
 QC_DETECTION_LIMIT <- as.numeric(get_env("QC_DETECTION_LIMIT", "0.60")) # Not sure i want to go lower than this due to imputation-issues
 
 # Minimum fraction of biological samples a feature must be detected in (globally)
-SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.40")) # Not sure i want to go lower than this due to imputation-issues
+SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.20")) # Not sure i want to go lower than this due to imputation-issues
 
 # Blank filter: remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
 # Set BLANK_RATIO=none to skip.
