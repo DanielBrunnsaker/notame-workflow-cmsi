@@ -39,14 +39,37 @@ eval_ltqc <- function(se) {
   median(rsd_per_feature, na.rm = TRUE)
 }
 
+
+# Compute MAD(ltQC) / MAD(Sample) per feature (analogous to D_ratio but using
+# held-out ltQC instead of pooled QC). Comparing this to the regular D_ratio_r
+# reveals overfitting: if ltqc_D_ratio >> D_ratio_r, the correction is
+# suppressing QC variance artificially rather than generalising.
+# Returns median across all features, or NA if insufficient samples.
+eval_ltqc_dratio <- function(se) {
+  ltqc_idx   <- which(colData(se)$QC == "ltQC")
+  sample_idx <- which(colData(se)$QC == "Sample")
+  if (length(ltqc_idx) < 2 || length(sample_idx) < 2) return(NA_real_)
+  mat <- assay(se, 1)
+  dratio_per_feature <- apply(mat, 1, function(x) {
+    lt <- x[ltqc_idx]
+    sm <- x[sample_idx]
+    ok_lt <- is.finite(lt)
+    ok_sm <- is.finite(sm)
+    if (sum(ok_lt) < 2 || sum(ok_sm) < 2) return(NA_real_)
+    mad(lt[ok_lt]) / mad(sm[ok_sm])
+  })
+  median(dratio_per_feature, na.rm = TRUE)
+}
+
 # Save per-feature QC metrics and a one-row summary for one correction method.
 # Files are written to interdir so results from multiple methods can be compared.
 #
 # Key metrics:
-#   ltqc_median_RSD_r — median robust RSD of held-out ltQC samples
-#   RSD_r             — robust RSD of pooled QC samples
-#   D_ratio_r         — MAD(QC) / MAD(Sample); lower = better separation of technical/biological
-#   Add maybe euclidean distance between samples/QCs, or silhouette scores in the PCA/tSNEs?
+#   ltqc_median_RSD_r   — median robust RSD of held-out ltQC samples (unbiased)
+#   ltqc_median_D_ratio — MAD(ltQC) / MAD(Sample); compare to median_D_ratio_r:
+#                         if ltqc >> D_ratio_r, correction is overfitting to QC
+#   RSD_r               — robust RSD of pooled QC samples
+#   D_ratio_r           — MAD(QC) / MAD(Sample); lower = better separation of technical/biological
 #
 save_correction_summary <- function(se, method, interdir) {
   rd <- as.data.frame(rowData(se))
@@ -57,13 +80,14 @@ save_correction_summary <- function(se, method, interdir) {
   drat <- rd$D_ratio_r[!is.na(rd$D_ratio_r)]
 
   summary_row <- data.frame(
-    method            = method,
-    n_features        = nrow(se),
-    ltqc_median_RSD_r = round(eval_ltqc(se),           4),
-    median_RSD_r      = round(median(rsd),              3),
-    median_D_ratio_r  = round(median(drat),             3),
-    pct_RSD_lt_30     = round(100 * mean(rsd < 0.30),  1),
-    stringsAsFactors  = FALSE
+    method               = method,
+    n_features           = nrow(se),
+    ltqc_median_RSD_r    = round(eval_ltqc(se),           4),
+    ltqc_median_D_ratio  = round(eval_ltqc_dratio(se),    3),
+    median_RSD_r         = round(median(rsd),              3),
+    median_D_ratio_r     = round(median(drat),             3),
+    pct_RSD_lt_30        = round(100 * mean(rsd < 0.30),  1),
+    stringsAsFactors     = FALSE
   )
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method, ".csv")), row.names = FALSE)
