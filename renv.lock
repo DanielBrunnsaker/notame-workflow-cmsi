@@ -1835,6 +1835,12 @@
       "NeedsCompilation": "no",
       "Repository": "CRAN"
     },
+    "corpcor": {
+      "Package": "corpcor",
+      "Version": "1.6.10",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "cowplot": {
       "Package": "cowplot",
       "Version": "1.2.0",
