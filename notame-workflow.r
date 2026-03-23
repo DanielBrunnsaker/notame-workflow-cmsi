@@ -69,6 +69,14 @@ Environment variables (all optional, hardcoded defaults shown):
                         Default: TRUE
                         Values:  TRUE | FALSE
 
+  LOW_INT_FILTER        Remove features where the Nth percentile of abundance (NAs treated as 0)
+                        is below this threshold. Alternative to blank filtering when no blanks
+                        are available. Set to empty string to skip (default).
+                        Default: (disabled)
+
+  LOW_INT_PERCENTILE    Percentile to use for LOW_INT_FILTER (0–1).
+                        Default: 0.8
+
 ")
   quit(status = 0)
 }
@@ -92,6 +100,12 @@ SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.40")) 
 # Blank filter: remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
 # Set to NULL to skip.
 BLANK_RATIO <- as.numeric(get_env("BLANK_RATIO", "1")) # This is very low, should default to 3x more generally?
+
+# Low-intensity filter: remove features where the Nth percentile of abundance
+# (NAs treated as 0) is below this threshold. Alternative to blank filtering.
+# Set to NA to skip (default).
+LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))
+LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE", "0.8"))
 
 # Correction methods to run. All listed methods are executed and saved to
 # separate subfolders. A comparison table is printed at the end.
@@ -176,6 +190,20 @@ n_after_blank <- nrow(data)
 # Remove non-analytical samples. ltQC is kept so we can use it to evaluate later on.
 data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST")]
 
+# Low-intensity filter: remove features where the Nth percentile of abundance
+# (NAs treated as 0) across biological + QC samples is below LOW_INT_FILTER.
+# Applied after removing non-analytical samples so blanks/wash don't deflate
+# the percentile and cause false removal of real features.
+if (!is.na(LOW_INT_FILTER)) {
+  mat_int <- assay(data)
+  mat_int[is.na(mat_int)] <- 0
+  int_quantile <- apply(mat_int, 1, quantile, probs = LOW_INT_PERCENTILE)
+  data <- data[int_quantile >= LOW_INT_FILTER, ]
+  cat(sprintf("Low-intensity filter (p%.0f < %.4g): removed %d features\n",
+              LOW_INT_PERCENTILE * 100, LOW_INT_FILTER, sum(int_quantile < LOW_INT_FILTER)))
+}
+n_after_lowint <- nrow(data)
+
 # Remove features with low detection in QC samples
 data <- flag_detection(data, qc_limit = QC_DETECTION_LIMIT)
 data <- drop_flagged(data)
@@ -197,10 +225,13 @@ n_after_zerovar <- nrow(data)
 
 # Save pre-filtering summary
 filter_log <- data.frame(
-  step               = c("Blank filter", "QC detection", "Sample detection", "Zero variance"),
-  features_removed   = c(n_before - n_after_blank, n_after_blank - n_after_qc,
-                         n_after_qc - n_after_sample, n_after_sample - n_after_zerovar),
-  features_remaining = c(n_after_blank, n_after_qc, n_after_sample, n_after_zerovar)
+  step               = c("Blank filter", "Low-intensity filter", "QC detection", "Sample detection", "Zero variance"),
+  features_removed   = c(n_before      - n_after_blank,
+                         n_after_blank - n_after_lowint,
+                         n_after_lowint - n_after_qc,
+                         n_after_qc    - n_after_sample,
+                         n_after_sample - n_after_zerovar),
+  features_remaining = c(n_after_blank, n_after_lowint, n_after_qc, n_after_sample, n_after_zerovar)
 )
 cat("\n--- Pre-filtering summary ---\n")
 print(filter_log, row.names = FALSE)
