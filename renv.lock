@@ -607,6 +607,12 @@
       "Author": "Hervé Pagès [aut, cre], Patrick Aboyoun [aut], Michael Lawrence [aut]",
       "Maintainer": "Hervé Pagès <hpages.on.github@gmail.com>"
     },
+    "JADE": {
+      "Package": "JADE",
+      "Version": "2.0-4",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "KEGGREST": {
       "Package": "KEGGREST",
       "Version": "1.50.0",
