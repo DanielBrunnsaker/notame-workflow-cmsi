@@ -343,23 +343,27 @@ for (method in CORRECTION_METHODS) {
   # Global RSD filter: features with RSD_r < 0.3 across all QC samples
   global_keep  <- !is.na(rowData(combined)$RSD_r) & rowData(combined)$RSD_r < 0.3
   combined_g   <- combined[global_keep, ]
-  clustered_g  <- compress_clusters(cluster_features(combined_g, all_features = TRUE))
-  write_feature_table(combined_g,  file = file.path(method_out, "feature_table_full_rsd30.xlsx"))
-  write_feature_info(combined_g,   file = file.path(method_out, "feature_info_full_rsd30.xlsx"))
-  write_feature_table(clustered_g, file = file.path(method_out, "feature_table_rsd30.xlsx"))
-  write_feature_info(clustered_g,  file = file.path(method_out, "feature_info_rsd30.xlsx"))
+  tryCatch({
+    clustered_g  <- compress_clusters(cluster_features(combined_g, all_features = TRUE))
+    write_feature_table(combined_g,  file = file.path(method_out, "feature_table_full_rsd30.xlsx"))
+    write_feature_info(combined_g,   file = file.path(method_out, "feature_info_full_rsd30.xlsx"))
+    write_feature_table(clustered_g, file = file.path(method_out, "feature_table_rsd30.xlsx"))
+    write_feature_info(clustered_g,  file = file.path(method_out, "feature_info_rsd30.xlsx"))
+  }, error = function(e) message("WARNING: global RSD filter export failed (", method, "): ", conditionMessage(e)))
 
   # Batchwise RSD filter: features with RSD_r < 0.3 in >= 50% of batches
   batch_rsd_cols <- grep("^RSD_r_B", colnames(rowData(combined)), value = TRUE)
   if (length(batch_rsd_cols) > 0) {
     batch_rsd_mat  <- as.matrix(as.data.frame(rowData(combined))[, batch_rsd_cols, drop = FALSE])
     frac_passing   <- rowMeans(batch_rsd_mat < 0.3, na.rm = TRUE)
-    combined_b     <- combined[frac_passing >= 0.5, ]
-    clustered_b    <- compress_clusters(cluster_features(combined_b, all_features = TRUE))
-    write_feature_table(combined_b,  file = file.path(method_out, "feature_table_full_batchrsd30.xlsx"))
-    write_feature_info(combined_b,   file = file.path(method_out, "feature_info_full_batchrsd30.xlsx"))
-    write_feature_table(clustered_b, file = file.path(method_out, "feature_table_batchrsd30.xlsx"))
-    write_feature_info(clustered_b,  file = file.path(method_out, "feature_info_batchrsd30.xlsx"))
+    combined_b     <- combined[!is.na(frac_passing) & frac_passing >= 0.5, ]
+    tryCatch({
+      clustered_b    <- compress_clusters(cluster_features(combined_b, all_features = TRUE))
+      write_feature_table(combined_b,  file = file.path(method_out, "feature_table_full_batchrsd30.xlsx"))
+      write_feature_info(combined_b,   file = file.path(method_out, "feature_info_full_batchrsd30.xlsx"))
+      write_feature_table(clustered_b, file = file.path(method_out, "feature_table_batchrsd30.xlsx"))
+      write_feature_info(clustered_b,  file = file.path(method_out, "feature_info_batchrsd30.xlsx"))
+    }, error = function(e) message("WARNING: batchwise RSD filter export failed (", method, "): ", conditionMessage(e)))
   }
 }
 
