@@ -2,14 +2,13 @@
 # High-level batch correction method wrappers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Wrapper around impute_rf that stores a pre-imputation missingness mask as a
-# second assay ("observed": TRUE = originally detected, FALSE = was NA/missing).
-# Used by eval_ltqc / eval_ltqc_dratio to avoid artefacts from imputed values.
+# Wrapper around impute_rf that captures a pre-imputation missingness mask.
+# Returns list(data = imputed_SE, mask = logical_matrix) so the mask never
+# touches the SE and cannot confuse notame functions expecting a single assay.
 impute_with_mask <- function(data, ...) {
   mask    <- !is.na(assay(data, 1))
   imputed <- impute_rf(data, ...)
-  assay(imputed, "observed", withDimnames = FALSE) <- mask
-  imputed
+  list(data = imputed, mask = mask)
 }
 
 correct_notame <- function(data, ruv_k) {
@@ -20,14 +19,16 @@ correct_notame <- function(data, ruv_k) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
-  pre <- combined
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
 
   message("==> Batch correction (RUV, k=", ruv_k, ")")
   qc_idx   <- which(colData(combined)$QC == "QC")
   combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
 
-  list(pre = pre, post = combined)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 correct_loess_combat <- function(data, loess_span) {
@@ -43,8 +44,10 @@ correct_loess_combat <- function(data, loess_span) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
-  pre <- combined
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
 
   message("==> Between-batch correction (ComBat)")
   assay(combined, 1, withDimnames = FALSE) <- ComBat(
@@ -52,7 +55,7 @@ correct_loess_combat <- function(data, loess_span) {
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = pre, post = combined)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -69,8 +72,10 @@ correct_loess_limma <- function(data, loess_span) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
-  pre <- combined
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
 
   message("==> Between-batch correction (limma::removeBatchEffect)")
   assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
@@ -78,7 +83,7 @@ correct_loess_limma <- function(data, loess_span) {
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = pre, post = combined)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -95,8 +100,10 @@ correct_linear_combat <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
-  pre <- combined
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
 
   message("==> Between-batch correction (ComBat)")
   assay(combined, 1, withDimnames = FALSE) <- ComBat(
@@ -104,7 +111,7 @@ correct_linear_combat <- function(data) {
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = pre, post = combined)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 correct_linear_limma <- function(data) {
@@ -120,8 +127,10 @@ correct_linear_limma <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
-  pre <- combined
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
 
   message("==> Between-batch correction (limma::removeBatchEffect)")
   assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
@@ -129,7 +138,7 @@ correct_linear_limma <- function(data) {
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = pre, post = combined)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -137,7 +146,9 @@ correct_combat_only <- function(data) {
   library(sva)
 
   message("==> Imputation")
-  combined <- impute_with_mask(data, parallelize = "variables")
+  imp      <- impute_with_mask(data, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
 
   message("==> Batch correction (ComBat only, no drift correction)")
   assay(combined, 1, withDimnames = FALSE) <- ComBat(
@@ -145,7 +156,7 @@ correct_combat_only <- function(data) {
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = combined, post = combined)
+  list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -168,9 +179,11 @@ correct_pmp_qcrsc <- function(data) {
   )
 
   message("==> Imputation")
-  combined <- impute_with_mask(combined, parallelize = "variables")
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
 
-  list(pre = combined, post = combined)
+  list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
 correct_batchcorr <- function(data,
@@ -181,7 +194,9 @@ correct_batchcorr <- function(data,
   library(batchCorr)
 
   message("==> Imputation (required by batchCorr)")
-  data <- impute_with_mask(data, parallelize = "variables")
+  imp      <- impute_with_mask(data, parallelize = "variables")
+  data     <- imp$data
+  obs_mask <- imp$mask
 
   # batchCorr expects samples × features matrix
   mat  <- t(assay(data, "abundances"))
@@ -246,7 +261,10 @@ correct_batchcorr <- function(data,
   combined <- pre
   assay(combined, "abundances", withDimnames = FALSE) <- t(norm_result$peakTable)
 
-  list(pre = pre, post = combined)
+  # Subset mask to match features/samples kept by mergeBatches
+  obs_mask <- obs_mask[kept_features, kept_samples, drop = FALSE]
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -255,7 +273,9 @@ correct_waveica <- function(data) {
   library(WaveICA2.0)
 
   message("==> Imputation (pre-WaveICA, required by algorithm)")
-  data <- impute_with_mask(data, parallelize = "variables")
+  imp      <- impute_with_mask(data, parallelize = "variables")
+  data     <- imp$data
+  obs_mask <- imp$mask
 
   message("==> WaveICA2.0 correction")
   corrected_mat <- WaveICA_2.0(
@@ -267,5 +287,5 @@ correct_waveica <- function(data) {
     K               = length(unique(colData(data)$Batch)) * 2
   )
   assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
-  list(pre = data, post = data)
+  list(pre = data, post = data, obs_mask = obs_mask)
 }

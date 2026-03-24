@@ -303,11 +303,7 @@ for (method in CORRECTION_METHODS) {
   if (is.null(result)) next
 
   combined <- result$post
-
-  # Extract pre-imputation observed mask before stripping it from the SE.
-  # notame functions (assess_quality, save_QC_plots, etc.) fail with multiple assays.
-  obs_mask <- if ("observed" %in% assayNames(combined)) assay(combined, "observed") else NULL
-  if (!is.null(obs_mask)) assays(combined)[["observed"]] <- NULL
+  obs_mask <- result$obs_mask  # pre-imputation missingness mask (may be NULL)
 
   # QC plots: post-correction only
   tryCatch(
