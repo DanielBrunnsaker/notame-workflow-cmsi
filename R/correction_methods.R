@@ -25,11 +25,7 @@ correct_notame <- function(data, ruv_k) {
 
   message("==> Batch correction (RUV, k=", ruv_k, ")")
   qc_idx   <- which(colData(combined)$QC == "QC")
-  mask     <- assay(combined, "observed")
   combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
-  # ruvs_qc returns a new SE and may drop additional assays — re-attach mask
-  if (!"observed" %in% assayNames(combined))
-    assay(combined, "observed", withDimnames = FALSE) <- mask
 
   list(pre = pre, post = combined)
 }

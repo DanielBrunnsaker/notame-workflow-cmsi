@@ -304,6 +304,11 @@ for (method in CORRECTION_METHODS) {
 
   combined <- result$post
 
+  # Extract pre-imputation observed mask before stripping it from the SE.
+  # notame functions (assess_quality, save_QC_plots, etc.) fail with multiple assays.
+  obs_mask <- if ("observed" %in% assayNames(combined)) assay(combined, "observed") else NULL
+  if (!is.null(obs_mask)) assays(combined)[["observed"]] <- NULL
+
   # QC plots: post-correction only
   tryCatch(
     save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_correction_"), id = "Sample_ID"),
@@ -311,7 +316,7 @@ for (method in CORRECTION_METHODS) {
   )
 
   combined <- assess_quality(combined)
-  save_correction_summary(combined, method = method, interdir = interdir)
+  save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask)
 
   # Remove ltQC, not needed for final output
   combined <- combined[, colData(combined)$QC != "ltQC"]

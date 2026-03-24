@@ -27,12 +27,12 @@ write_feature_info <- function(se, file) {
 # min_det_frac: minimum fraction of ltQC samples that must be non-NA (pre-imputation
 # proxy — features below this are excluded to avoid imputed-value artefacts).
 # Returns median ltQC RSD across all features passing the detection filter, or NA.
-eval_ltqc <- function(se, min_det_frac = 0.5) {
+eval_ltqc <- function(se, min_det_frac = 0.5, mask = NULL) {
   ltqc_idx <- which(colData(se)$QC == "ltQC")
   if (length(ltqc_idx) < 2) return(NA_real_)
   mat      <- assay(se, 1)[, ltqc_idx, drop = FALSE]
-  has_mask <- "observed" %in% assayNames(se)
-  if (has_mask) obs <- assay(se, "observed")[, ltqc_idx, drop = FALSE]
+  has_mask <- !is.null(mask)
+  if (has_mask) obs <- mask[, ltqc_idx, drop = FALSE]
   rsd_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
     x  <- mat[i, ]
     ok <- if (has_mask) obs[i, ] else !is.na(x)
@@ -48,18 +48,17 @@ eval_ltqc <- function(se, min_det_frac = 0.5) {
 # ltQC and sample groups to include a feature (uses pre-imputation mask when
 # available to avoid artefacts from imputed values).
 # Returns median across all features passing the detection filter, or NA.
-eval_ltqc_dratio <- function(se, min_det_frac = 0.5) {
+eval_ltqc_dratio <- function(se, min_det_frac = 0.5, mask = NULL) {
   ltqc_idx   <- which(colData(se)$QC == "ltQC")
   sample_idx <- which(colData(se)$QC == "Sample")
   if (length(ltqc_idx) < 2 || length(sample_idx) < 2) return(NA_real_)
   mat      <- assay(se, 1)
-  has_mask <- "observed" %in% assayNames(se)
-  if (has_mask) obs <- assay(se, "observed")
+  has_mask <- !is.null(mask)
   dratio_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
     lt <- mat[i, ltqc_idx]
     sm <- mat[i, sample_idx]
-    ok_lt <- if (has_mask) obs[i, ltqc_idx]   else is.finite(lt)
-    ok_sm <- if (has_mask) obs[i, sample_idx] else is.finite(sm)
+    ok_lt <- if (has_mask) mask[i, ltqc_idx]   else is.finite(lt)
+    ok_sm <- if (has_mask) mask[i, sample_idx] else is.finite(sm)
     if (mean(ok_lt) < min_det_frac || mean(ok_sm) < min_det_frac) return(NA_real_)
     if (sum(ok_lt) < 2 || sum(ok_sm) < 2) return(NA_real_)
     denom <- mad(sm[ok_sm])
@@ -78,7 +77,7 @@ eval_ltqc_dratio <- function(se, min_det_frac = 0.5) {
 #   RSD_r               — robust RSD of pooled QC samples
 #   D_ratio_r           — MAD(QC) / MAD(Sample); lower = better separation of technical/biological
 #
-save_correction_summary <- function(se, method, interdir) {
+save_correction_summary <- function(se, method, interdir, obs_mask = NULL) {
   rd <- as.data.frame(rowData(se))
 
   write.csv(rd, file.path(interdir, paste0("qc_metrics_", method, ".csv")), row.names = TRUE)
@@ -89,8 +88,8 @@ save_correction_summary <- function(se, method, interdir) {
   summary_row <- data.frame(
     method               = method,
     n_features           = nrow(se),
-    ltqc_median_RSD_r    = round(eval_ltqc(se),           4),
-    ltqc_median_D_ratio  = round(eval_ltqc_dratio(se),    3),
+    ltqc_median_RSD_r    = round(eval_ltqc(se,        mask = obs_mask), 4),
+    ltqc_median_D_ratio  = round(eval_ltqc_dratio(se, mask = obs_mask), 3),
     median_RSD_r         = round(median(rsd),              3),
     median_D_ratio_r     = round(median(drat),             3),
     pct_RSD_lt_30        = round(100 * mean(rsd < 0.30),  1),
