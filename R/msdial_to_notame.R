@@ -85,7 +85,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
 
   # MSe/MS2 detected from the middle section (between batch and POS/NEG),
   # not from the sample name. All other types detected from sample name.
-  # Make this a bit more reliable if there is intention to automate this
+
+  # Make this a bit more reliable if there is intention to automate this?
   classify_qc <- function(name, is_mse = FALSE, is_ms2 = FALSE) {
     if (is_mse)                                         return("MSe")
     if (is_ms2)                                         return("MS2")

@@ -24,39 +24,47 @@ write_feature_info <- function(se, file) {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Compute robust RSD (MAD / median) of ltQC samples per feature.
-# ltQC samples are held-out (not used in correction fitting), so their
-# post-correction RSD is an "unbiased" measure of correction quality.
-# Returns median ltQC RSD across all features, or NA if < 2 ltQC samples.
-eval_ltqc <- function(se) {
+# min_det_frac: minimum fraction of ltQC samples that must be non-NA (pre-imputation
+# proxy — features below this are excluded to avoid imputed-value artefacts).
+# Returns median ltQC RSD across all features passing the detection filter, or NA.
+eval_ltqc <- function(se, min_det_frac = 0.5) {
   ltqc_idx <- which(colData(se)$QC == "ltQC")
   if (length(ltqc_idx) < 2) return(NA_real_)
-  mat <- assay(se, 1)[, ltqc_idx, drop = FALSE]
-  rsd_per_feature <- apply(mat, 1, function(x) {
-    ok <- !is.na(x)
-    if (sum(ok) < 2) return(NA_real_)
+  mat      <- assay(se, 1)[, ltqc_idx, drop = FALSE]
+  has_mask <- "observed" %in% assayNames(se)
+  if (has_mask) obs <- assay(se, "observed")[, ltqc_idx, drop = FALSE]
+  rsd_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
+    x  <- mat[i, ]
+    ok <- if (has_mask) obs[i, ] else !is.na(x)
+    if (mean(ok) < min_det_frac || sum(ok) < 2) return(NA_real_)
     mad(x[ok]) / median(x[ok])
   })
   median(rsd_per_feature, na.rm = TRUE)
 }
 
 
-# Compute MAD(ltQC) / MAD(Sample) per feature (analogous to D_ratio but using
-# held-out ltQC instead of pooled QC). Comparing this to the regular D_ratio_r
-# reveals overfitting: if ltqc_D_ratio >> D_ratio_r, the correction is
-# suppressing QC variance artificially rather than generalising.
-# Returns median across all features, or NA if insufficient samples.
-eval_ltqc_dratio <- function(se) {
+# Compute MAD(ltQC) / MAD(Sample) per feature
+# min_det_frac: minimum fraction of originally-detected values required in BOTH
+# ltQC and sample groups to include a feature (uses pre-imputation mask when
+# available to avoid artefacts from imputed values).
+# Returns median across all features passing the detection filter, or NA.
+eval_ltqc_dratio <- function(se, min_det_frac = 0.5) {
   ltqc_idx   <- which(colData(se)$QC == "ltQC")
   sample_idx <- which(colData(se)$QC == "Sample")
   if (length(ltqc_idx) < 2 || length(sample_idx) < 2) return(NA_real_)
-  mat <- assay(se, 1)
-  dratio_per_feature <- apply(mat, 1, function(x) {
-    lt <- x[ltqc_idx]
-    sm <- x[sample_idx]
-    ok_lt <- is.finite(lt)
-    ok_sm <- is.finite(sm)
+  mat      <- assay(se, 1)
+  has_mask <- "observed" %in% assayNames(se)
+  if (has_mask) obs <- assay(se, "observed")
+  dratio_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
+    lt <- mat[i, ltqc_idx]
+    sm <- mat[i, sample_idx]
+    ok_lt <- if (has_mask) obs[i, ltqc_idx]   else is.finite(lt)
+    ok_sm <- if (has_mask) obs[i, sample_idx] else is.finite(sm)
+    if (mean(ok_lt) < min_det_frac || mean(ok_sm) < min_det_frac) return(NA_real_)
     if (sum(ok_lt) < 2 || sum(ok_sm) < 2) return(NA_real_)
-    mad(lt[ok_lt]) / mad(sm[ok_sm])
+    denom <- mad(sm[ok_sm])
+    if (denom == 0) return(NA_real_)
+    mad(lt[ok_lt]) / denom
   })
   median(dratio_per_feature, na.rm = TRUE)
 }
@@ -66,8 +74,7 @@ eval_ltqc_dratio <- function(se) {
 #
 # Key metrics:
 #   ltqc_median_RSD_r   — median robust RSD of held-out ltQC samples (unbiased)
-#   ltqc_median_D_ratio — MAD(ltQC) / MAD(Sample); compare to median_D_ratio_r:
-#                         if ltqc >> D_ratio_r, correction is overfitting to QC
+#   ltqc_median_D_ratio — MAD(ltQC) / MAD(Sample)
 #   RSD_r               — robust RSD of pooled QC samples
 #   D_ratio_r           — MAD(QC) / MAD(Sample); lower = better separation of technical/biological
 #
@@ -101,8 +108,6 @@ save_correction_summary <- function(se, method, interdir) {
 # Add per-batch QC RSD columns to rowData.
 # Computes robust RSD (MAD / median) of QC samples within each batch and
 # appends columns named RSD_r_B{batch} to rowData(se).
-# These complement the global RSD_r / D_ratio_r already added by assess_quality,
-# giving downstream analysts per-batch signal to judge whether to drop a batch.
 add_batch_qc_metrics <- function(se) {
   batches <- sort(unique(colData(se)$Batch))
   mat     <- assay(se, 1)

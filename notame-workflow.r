@@ -106,7 +106,7 @@ BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip")) NA_real_ else
                as.numeric(blank_ratio_env)
 
 # Low-intensity filter: remove features where the Nth percentile of abundance
-# (NAs treated as 0) is below this threshold. Alternative to blank filtering.
+# (NAs treated as 0) is below this threshold. 
 # Set to NA to skip (default).
 LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))
 LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE", "0.8"))
@@ -136,9 +136,6 @@ LOESS_SPAN <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 
 # Whether to save QC plots before any correction (can be slow with large datasets)
 SAVE_PRE_CORRECTION_PLOTS <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
-
-
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) CONVERT & IMPORT
@@ -175,6 +172,7 @@ message("==> Global pre-filtering")
 data <- mark_nas(data, value = 0)
 
 # Blank filter: keep features where mean sample abundance > BLANK_RATIO * mean blank abundance.
+# Maybe remove this? Arguably only works if we have blanks dispersed in the runlist
 n_before <- nrow(data)
 if (!is.na(BLANK_RATIO)) {
   blank_idx <- which(colData(data)$QC == "Blank")
@@ -195,9 +193,7 @@ n_after_blank <- nrow(data)
 data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST")]
 
 # Low-intensity filter: remove features where the Nth percentile of abundance
-# (NAs treated as 0) across biological + QC samples is below LOW_INT_FILTER.
-# Applied after removing non-analytical samples so blanks/wash don't deflate
-# the percentile and cause false removal of real features.
+# across biological + QC samples is below LOW_INT_FILTER.
 if (!is.na(LOW_INT_FILTER)) {
   mat_int <- assay(data)
   mat_int[is.na(mat_int)] <- 0
