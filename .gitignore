@@ -19,6 +19,11 @@ renv/library/
 renv/staging/
 renv/python/
 
+# Other scripts
+mzml-quality-check.R
+normalization.R
+posthoc_qc_metrics.r
+
 # Docker
 *.tar
 

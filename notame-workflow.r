@@ -16,6 +16,7 @@ source("R/msdial_to_notame.R")
 source("R/qc_metrics.R")
 source("R/drift_correction.R")
 source("R/correction_methods.R")
+source("R/serrf.R")
 
 registerDoParallel(cores = parallel::detectCores() - 1)
 
@@ -48,7 +49,8 @@ Environment variables (all optional, hardcoded defaults shown):
   CORRECTION_METHODS    Comma-separated list of correction methods to run
                         Default: loess_combat,notame,pmp_qcrsc,waveica,batchcorr
                         Values:  notame | loess_combat | loess_limma |
-                                 pmp_qcrsc | combat_only | batchcorr | waveica | linear_combat | linear_limma
+                                 pmp_qcrsc | combat_only | batchcorr | waveica |
+                                 linear_combat | linear_limma | serrf
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -122,6 +124,7 @@ LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE", "0.8"))
 #   "waveica"       — WaveICA2.0 - need to look over the defauls on this one, works horribly atm
 #   "linear_combat" — per-batch linear drift correction + ComBat
 #   "linear_limma"  — per-batch linear drift correction + limma::removeBatchEffect
+#   "serrf"         — Systematic Error Removal using Random Forest (Fan et al. 2019)
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "loess_combat,notame,pmp_qcrsc,waveica,batchcorr"), ",")[[1]]
 
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
@@ -265,8 +268,26 @@ if (SAVE_PRE_CORRECTION_PLOTS) {
 old_summaries <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
 if (length(old_summaries) > 0) file.remove(old_summaries)
 
+# Build raw reference for signal-preservation metric (Option B):
+# Impute the unfiltered data once so we have a complete sample matrix to
+# correlate against after each correction. Only biological samples are used.
+# Stored as features × samples matrix (Sample_ID as column names).
+message("==> Building raw reference for signal-preservation metric")
+raw_ref <- tryCatch({
+  raw_imp  <- impute_rf(data, parallelize = "variables")
+  samp_idx <- which(colData(raw_imp)$QC == "Sample")
+  mat      <- assay(raw_imp, 1)[, samp_idx, drop = FALSE]
+  colnames(mat) <- colData(raw_imp)$Sample_ID[samp_idx]
+  # Persist to disk so posthoc scripts can reuse it
+  write.csv(as.data.frame(mat), file.path(output_dir, "raw_reference.csv"))
+  mat
+}, error = function(e) {
+  message("WARNING: could not build raw reference (signal_preservation_r will be NA): ", conditionMessage(e))
+  NULL
+})
+
 # Save uncorrected baseline QC metrics for comparison
-save_correction_summary(assess_quality(data), method = "uncorrected", interdir = interdir)
+save_correction_summary(assess_quality(data), method = "uncorrected", interdir = interdir, raw_ref = raw_ref)
 
 # Export sample metadata
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
@@ -292,7 +313,8 @@ for (method in CORRECTION_METHODS) {
       waveica       = correct_waveica(data),
       linear_combat = correct_linear_combat(data),
       linear_limma  = correct_linear_limma(data),
-      stop("Unknown method '", method, "'. Valid: notame, loess_combat, loess_limma, pmp_qcrsc, combat_only, batchcorr, waveica, linear_combat, linear_limma")
+      serrf         = correct_serrf(data),
+      stop("Unknown method '", method, "'. Valid: notame, loess_combat, loess_limma, pmp_qcrsc, combat_only, batchcorr, waveica, linear_combat, linear_limma, serrf")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
@@ -312,7 +334,7 @@ for (method in CORRECTION_METHODS) {
   )
 
   combined <- assess_quality(combined)
-  save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask)
+  save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref)
 
   # Remove ltQC, not needed for final output
   combined <- combined[, colData(combined)$QC != "ltQC"]

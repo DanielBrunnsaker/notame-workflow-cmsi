@@ -68,16 +68,93 @@ eval_ltqc_dratio <- function(se, min_det_frac = 0.5, mask = NULL) {
   median(dratio_per_feature, na.rm = TRUE)
 }
 
+# Compute median pairwise euclidean distance ratio between two sample groups
+# in PCA space (top n_pcs components, unit-variance scaled).
+# Returns median(dist_group1) / median(dist_group2).
+# Lower = group1 is tighter relative to group2.
+# Use group1="QC"   for the biased (fitted) version of multivariate D_ratio.
+# Use group1="ltQC" for the unbiased held-out version.
+eval_dist_ratio <- function(se, group1 = "ltQC", group2 = "Sample", n_pcs = 20) {
+  idx1 <- which(colData(se)$QC == group1)
+  idx2 <- which(colData(se)$QC == group2)
+  if (length(idx1) < 2 || length(idx2) < 2) return(NA_real_)
+
+  mat <- t(assay(se, 1))  # samples x features
+
+  # Drop zero-variance features (would cause scale. = TRUE to fail)
+  feat_var <- apply(mat, 2, var, na.rm = TRUE)
+  mat <- mat[, !is.na(feat_var) & feat_var > 0, drop = FALSE]
+  if (ncol(mat) < 2) return(NA_real_)
+
+  n_pcs_use <- min(n_pcs, nrow(mat) - 1, ncol(mat))
+  pca <- tryCatch(
+    prcomp(mat, center = TRUE, scale. = TRUE, rank. = n_pcs_use),
+    error = function(e) NULL
+  )
+  if (is.null(pca)) return(NA_real_)
+
+  scores <- pca$x
+  d1 <- as.vector(dist(scores[idx1, , drop = FALSE]))
+  d2 <- as.vector(dist(scores[idx2, , drop = FALSE]))
+  if (length(d1) == 0 || length(d2) == 0 || median(d2) == 0) return(NA_real_)
+  median(d1) / median(d2)
+}
+
+
+# Compute median feature-wise Spearman correlation between corrected and a
+# reference dataset (both restricted to biological samples only).
+# Features present in both are used; returns NA if fewer than 2 features match.
+eval_signal_preservation <- function(se, ref_mat) {
+  if (is.null(ref_mat)) return(NA_real_)
+  sample_idx <- which(colData(se)$QC == "Sample")
+  if (length(sample_idx) < 3) return(NA_real_)
+
+  mat <- assay(se, 1)[, sample_idx, drop = FALSE]
+
+  # Align to features present in both
+  shared <- intersect(rownames(mat), rownames(ref_mat))
+  if (length(shared) < 2) return(NA_real_)
+
+  # Align columns (samples) by Sample_ID
+  cd      <- colData(se)[sample_idx, , drop = FALSE]
+  ref_ids <- colnames(ref_mat)
+  cur_ids <- cd$Sample_ID
+
+  shared_ids <- intersect(cur_ids, ref_ids)
+  if (length(shared_ids) < 3) return(NA_real_)
+
+  cur_cols <- match(shared_ids, cur_ids)
+  ref_cols <- match(shared_ids, ref_ids)
+
+  mat_cur <- mat[shared, cur_cols, drop = FALSE]
+  mat_ref <- ref_mat[shared, ref_cols, drop = FALSE]
+
+  # Feature-wise Spearman correlation
+  cors <- sapply(seq_len(nrow(mat_cur)), function(i) {
+    x <- mat_cur[i, ]
+    y <- mat_ref[i, ]
+    ok <- is.finite(x) & is.finite(y)
+    if (sum(ok) < 3) return(NA_real_)
+    cor(x[ok], y[ok], method = "spearman")
+  })
+  median(cors, na.rm = TRUE)
+}
+
+
 # Save per-feature QC metrics and a one-row summary for one correction method.
 # Files are written to interdir so results from multiple methods can be compared.
 #
 # Key metrics:
-#   ltqc_median_RSD_r   — median robust RSD of held-out ltQC samples (unbiased)
-#   ltqc_median_D_ratio — MAD(ltQC) / MAD(Sample)
-#   RSD_r               — robust RSD of pooled QC samples
-#   D_ratio_r           — MAD(QC) / MAD(Sample); lower = better separation of technical/biological
+#   ltqc_median_RSD_r      — median robust RSD of held-out ltQC samples (unbiased)
+#   ltqc_median_D_ratio    — MAD(ltQC) / MAD(Sample); per-feature, unbiased
+#   ltqc_dist_ratio        — median pairwise dist(ltQC) / dist(Sample) in PCA space (unbiased)
+#   qc_dist_ratio          — median pairwise dist(QC) / dist(Sample) in PCA space (biased)
+#   RSD_r                  — robust RSD of pooled QC samples
+#   D_ratio_r              — MAD(QC) / MAD(Sample); lower = better separation
+#   median_sample_MAD      — median of per-feature MAD across biological samples
+#   signal_preservation_r  — median feature-wise Spearman cor vs raw uncorrected data
 #
-save_correction_summary <- function(se, method, interdir, obs_mask = NULL) {
+save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
 
   write.csv(rd, file.path(interdir, paste0("qc_metrics_", method, ".csv")), row.names = TRUE)
@@ -85,15 +162,31 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL) {
   rsd  <- rd$RSD_r[!is.na(rd$RSD_r)]
   drat <- rd$D_ratio_r[!is.na(rd$D_ratio_r)]
 
+  # Median sample MAD: absolute biological variance (higher = more signal retained)
+  sample_idx <- which(colData(se)$QC == "Sample")
+  sample_mads <- if (length(sample_idx) >= 2) {
+    apply(assay(se, 1)[, sample_idx, drop = FALSE], 1, function(x) {
+      ok <- is.finite(x)
+      if (sum(ok) < 2) return(NA_real_)
+      mad(x[ok])
+    })
+  } else {
+    NA_real_
+  }
+
   summary_row <- data.frame(
-    method               = method,
-    n_features           = nrow(se),
-    ltqc_median_RSD_r    = round(eval_ltqc(se,        mask = obs_mask), 4),
-    ltqc_median_D_ratio  = round(eval_ltqc_dratio(se, mask = obs_mask), 3),
-    median_RSD_r         = round(median(rsd),              3),
-    median_D_ratio_r     = round(median(drat),             3),
-    pct_RSD_lt_30        = round(100 * mean(rsd < 0.30),  1),
-    stringsAsFactors     = FALSE
+    method                = method,
+    n_features            = nrow(se),
+    ltqc_median_RSD_r     = round(eval_ltqc(se,             mask = obs_mask), 4),
+    ltqc_median_D_ratio   = round(eval_ltqc_dratio(se,      mask = obs_mask), 3),
+    ltqc_dist_ratio       = round(eval_dist_ratio(se,        group1 = "ltQC"), 3),
+    qc_dist_ratio         = round(eval_dist_ratio(se,        group1 = "QC"),   3),
+    median_RSD_r          = round(median(rsd),               3),
+    median_D_ratio_r      = round(median(drat),              3),
+    pct_RSD_lt_30         = round(100 * mean(rsd < 0.30),   1),
+    median_sample_MAD     = round(median(sample_mads, na.rm = TRUE), 2),
+    signal_preservation_r = round(eval_signal_preservation(se, raw_ref), 3),
+    stringsAsFactors      = FALSE
   )
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method, ".csv")), row.names = FALSE)
