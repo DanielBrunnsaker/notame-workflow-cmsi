@@ -317,14 +317,9 @@ correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
   e_new    <- assay(combined, 1)
 
   e_new[, qc_idx]   <- e_qc_corr
-  colnames(e_new)[qc_idx] <- colnames(e_qc_corr)
-
   e_new[, samp_idx] <- e_samp_corr
-  colnames(e_new)[samp_idx] <- colnames(e_samp_corr)
-
   if (!is.null(e_ltqc_corr)) {
     e_new[, ltqc_idx] <- e_ltqc_corr
-    colnames(e_new)[ltqc_idx] <- colnames(e_ltqc_corr)
   }
 
   assay(combined, 1, withDimnames = FALSE) <- e_new
