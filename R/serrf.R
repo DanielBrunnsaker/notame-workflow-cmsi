@@ -30,63 +30,64 @@ serrfR <- function(train,
                    sampleType.,
                    cl) {
 
-  all    <- cbind(train, target)
+  all        <- cbind(train, target)
   normalized <- rep(0, ncol(all))
 
-  # Impute zeros / NAs with small noise around per-batch minimum
+  # ── Impute zeros and NAs with small noise around per-batch minimum ───────────
+  # Faithful to original: zeros → noise at min+1; NAs → noise at 0.5*min+1
   for (j in seq_len(nrow(all))) {
     for (b in levels(batch.)) {
-      col_b <- batch. %in% b
-      x_b   <- all[j, col_b]
-      ok_b  <- !is.na(x_b) & is.finite(x_b)
+      col_b  <- which(batch. %in% b)
+      x_b    <- all[j, col_b]
+      ok_b   <- !is.na(x_b)
       if (sum(ok_b) == 0) next
-      mn <- min(x_b[ok_b]) + 1
-      sd_val <- 0.1 * (min(x_b[ok_b]) + 0.1)
-      # replace zeros
-      zero_b <- col_b & (all[j, ] == 0)
-      if (any(zero_b))
-        all[j, zero_b] <- rnorm(sum(zero_b), mean = mn, sd = sd_val)
-      # replace NAs
-      na_b <- col_b & is.na(all[j, ])
-      if (any(na_b))
-        all[j, na_b] <- rnorm(sum(na_b), mean = 0.5 * (mn - 1) + 1, sd = sd_val)
+      mn     <- min(x_b[ok_b])
+      sd_val <- 0.1 * (mn + 0.1)
+      # zeros → noise around min+1
+      z_idx <- col_b[x_b == 0 & !is.na(x_b)]
+      if (length(z_idx) > 0)
+        all[j, z_idx] <- rnorm(length(z_idx), mean = mn + 1, sd = sd_val)
+      # NAs → noise around 0.5*min+1
+      na_idx <- col_b[is.na(x_b)]
+      if (length(na_idx) > 0)
+        all[j, na_idx] <- rnorm(length(na_idx), mean = 0.5 * mn + 1, sd = sd_val)
     }
   }
 
-  # Per-batch Spearman correlation matrices (for feature selection)
+  # ── Per-batch Spearman correlation matrices (for feature selection) ──────────
+  # Train: row-scale (features × samples → scale across samples per feature)
+  # Target: column-scale — matches actual original behaviour (is.null check is
+  #         always FALSE on a matrix, so else-branch always executes)
   corrs_train  <- list()
   corrs_target <- list()
   for (b in levels(batch.)) {
-    col_qc   <- sampleType. == "qc"   & batch. %in% b
-    col_samp <- sampleType. == "sample" & batch. %in% b
+    tr_cols <- train[, batch.[sampleType. == "qc"] %in% b, drop = FALSE]
+    tg_cols <- target[, batch.[sampleType. == "sample"] %in% b, drop = FALSE]
 
-    tr_scale <- t(apply(train[, batch.[sampleType. == "qc"] %in% b, drop = FALSE], 1, scale))
-    tg_sub   <- target[, batch.[sampleType. == "sample"] %in% b, drop = FALSE]
-
-    if (ncol(tg_sub) == 1) {
-      tg_scale <- scale(tg_sub)
-    } else {
-      tg_scale <- t(apply(tg_sub, 1, scale))
-    }
+    tr_scale <- t(apply(tr_cols, 1, scale))
+    tg_scale <- scale(tg_cols)          # column-scale: matches original else-branch
 
     corrs_train[[b]]  <- cor(t(tr_scale), method = "spearman")
     corrs_target[[b]] <- cor(t(tg_scale), method = "spearman")
   }
 
-  # Parallel per-feature correction
+  # ── Parallel per-feature correction ─────────────────────────────────────────
   pred <- parallel::parSapply(
     cl, X = seq_len(nrow(all)),
     function(j, all, batch., ranger, sampleType., time., num, corrs_train, corrs_target) {
+
       normalized <- rep(0, ncol(all))
+      print(j)
 
       for (b in levels(batch.)) {
-        e_current_batch  <- all[, batch. %in% b, drop = FALSE]
-        corr_train       <- corrs_train[[b]]
-        corr_target      <- corrs_target[[b]]
+        e_current_batch <- all[, batch. %in% b, drop = FALSE]
+        corr_train      <- corrs_train[[b]]
+        corr_target     <- corrs_target[[b]]
 
         corr_train_order  <- order(abs(corr_train[, j]),  decreasing = TRUE)
         corr_target_order <- order(abs(corr_target[, j]), decreasing = TRUE)
 
+        # Expand search window until num features found in both top-lists
         sel_var <- c()
         l <- num
         while (length(sel_var) < num) {
@@ -94,88 +95,102 @@ serrfR <- function(train,
                                corr_target_order[seq_len(l)])
           sel_var <- sel_var[sel_var != j]
           l <- l + 1
-          if (l > nrow(all)) break
+          if (l > nrow(all)) break   
         }
 
-        train_idx  <- sampleType.[batch. %in% b] == "qc"
-        train_y    <- scale(e_current_batch[j, train_idx], scale = FALSE)
-        train_x    <- apply(e_current_batch[sel_var, train_idx, drop = FALSE], 1, scale)
+        train_idx <- sampleType.[batch. %in% b] == "qc"
 
-        test_sub   <- e_current_batch[sel_var, !train_idx, drop = FALSE]
-        if (ncol(test_sub) == 1) {
-          test_x <- t(scale(test_sub))
+        # y: mean-centred QC signal for feature j
+        train_data_y <- scale(e_current_batch[j, train_idx], scale = FALSE)
+
+        # x: column-scaled predictor features (samples are observations)
+        train_data_x <- apply(
+          e_current_batch[sel_var, train_idx, drop = FALSE], 1, scale)
+
+        if (is.null(dim(e_current_batch[sel_var, !train_idx]))) {
+          test_data_x <- t(scale(e_current_batch[sel_var, !train_idx]))
         } else {
-          test_x <- apply(test_sub, 1, scale)
+          test_data_x <- apply(e_current_batch[sel_var, !train_idx], 1, scale)
         }
-        if (!is.matrix(test_x)) test_x <- t(test_x)
 
-        # Drop features with NA in train or test
-        good <- apply(train_x, 2, function(x) sum(is.na(x)) == 0) &
-                apply(test_x,  2, function(x) sum(is.na(x)) == 0)
-        train_x <- train_x[, good, drop = FALSE]
-        test_x  <- test_x[,  good, drop = FALSE]
-        if (!is.matrix(test_x)) test_x <- t(test_x)
+        # First NA filter: drop predictor columns with any NA in train
+        train_NA_index <- apply(train_data_x, 2, function(x) sum(is.na(x)) > 0)
+        train_data_x   <- train_data_x[, !train_NA_index, drop = FALSE]
+        test_data_x    <- test_data_x[,  !train_NA_index, drop = FALSE]
+        if (!is.matrix(test_data_x)) test_data_x <- t(test_data_x)
 
-        norm_b <- e_current_batch[j, ]
+        # Second NA filter: drop columns with NA in either train or test
+        good_column  <- apply(train_data_x, 2, function(x) sum(is.na(x)) == 0) &
+                        apply(test_data_x,  2, function(x) sum(is.na(x)) == 0)
+        train_data_x <- train_data_x[, good_column, drop = FALSE]
+        test_data_x  <- test_data_x[,  good_column, drop = FALSE]
+        if (!is.matrix(test_data_x)) test_data_x <- t(test_data_x)
 
-        if (ncol(train_x) == 0) {
-          # Not enough predictor features — leave uncorrected
-          normalized[batch. %in% b] <- norm_b
+        train_data <- data.frame(y = as.vector(train_data_y), train_data_x)
+
+        norm <- e_current_batch[j, ]
+
+        if (ncol(train_data) == 1) {
+          normalized[batch. %in% b] <- norm
           next
         }
 
-        train_df <- data.frame(y = as.vector(train_y),
-                               setNames(as.data.frame(train_x),
-                                        paste0("V", seq_len(ncol(train_x)))))
-        test_df  <- setNames(as.data.frame(test_x),
-                             paste0("V", seq_len(ncol(test_x))))
-
+        colnames(train_data) <- c("y", paste0("V", seq_len(ncol(train_data) - 1)))
         model <- tryCatch(
-          ranger::ranger(y ~ ., data = train_df, num.trees = 500),
+          ranger::ranger(y ~ ., data = train_data),
           error = function(e) NULL
         )
         if (is.null(model)) {
-          normalized[batch. %in% b] <- norm_b
+          normalized[batch. %in% b] <- norm
           next
         }
 
-        qc_mean_global   <- mean(all[j, sampleType. == "qc"],    na.rm = TRUE)
+        test_data           <- as.data.frame(test_data_x)
+        colnames(test_data) <- colnames(train_data)[-1]
+
+        pred_train <- ranger::predictions(predict(model, data = train_data))
+        pred_test  <- ranger::predictions(predict(model, data = test_data))
+
+        qc_mean_global     <- mean(all[j, sampleType. == "qc"],      na.rm = TRUE)
+        qc_median_global   <- median(all[j, sampleType. == "qc"],    na.rm = TRUE)
         samp_median_global <- median(all[j, sampleType. == "sample"], na.rm = TRUE)
-        qc_mean_local    <- mean(e_current_batch[j, train_idx],   na.rm = TRUE)
-        samp_mean_local  <- mean(e_current_batch[j, !train_idx],  na.rm = TRUE)
+        qc_mean_local      <- mean(e_current_batch[j, train_idx],    na.rm = TRUE)
+        samp_mean_local    <- mean(e_current_batch[j, !train_idx],   na.rm = TRUE)
 
-        pred_train <- ranger::predictions(predict(model, data = train_df))
-        pred_test  <- ranger::predictions(predict(model, data = test_df))
-
-        norm_b[train_idx]  <- e_current_batch[j, train_idx]  /
+        # Multiplicative correction (original lines 851, 854)
+        # QC uses global mean as reference (line 851); samples use global median (line 854). 
+        # Not sure why this is the case, but it aligns with the original implementation.
+        norm[train_idx]  <- e_current_batch[j, train_idx] /
           ((pred_train + qc_mean_local) / qc_mean_global)
-        norm_b[!train_idx] <- e_current_batch[j, !train_idx] /
-          ((pred_test  + samp_mean_local) / samp_median_global)
+        norm[!train_idx] <- e_current_batch[j, !train_idx] /
+          ((pred_test + samp_mean_local) / samp_median_global)
 
-        # Clamp extreme outliers (coef = 3 IQR) back to additive correction
-        out_flags <- norm_b[!train_idx] %in% boxplot.stats(norm_b, coef = 3)$out
-        if (any(out_flags)) {
-          norm_b[!train_idx][out_flags] <-
-            (e_current_batch[j, !train_idx] -
-               (pred_test + samp_mean_local - samp_median_global))[out_flags]
-        }
-        norm_b[!train_idx][norm_b[!train_idx] < 0] <-
-          e_current_batch[j, !train_idx][norm_b[!train_idx] < 0]
+        # Clamp sample negatives to raw before rescaling (original line 855)
+        norm[!train_idx][norm[!train_idx] < 0] <-
+          e_current_batch[j, !train_idx][norm[!train_idx] < 0]
 
-        # Rescale to preserve global medians
-        med_qc   <- median(norm_b[train_idx],  na.rm = TRUE)
-        med_samp <- median(norm_b[!train_idx], na.rm = TRUE)
-        if (is.finite(med_qc)   && med_qc   != 0)
-          norm_b[train_idx]  <- norm_b[train_idx]  / (med_qc   / qc_mean_global)
-        if (is.finite(med_samp) && med_samp != 0)
-          norm_b[!train_idx] <- norm_b[!train_idx] / (med_samp / samp_median_global)
+        # Rescale to preserve global medians (original lines 861-862)
+        norm[train_idx]  <- norm[train_idx]  /
+          (median(norm[train_idx],  na.rm = TRUE) / qc_median_global)
+        norm[!train_idx] <- norm[!train_idx] /
+          (median(norm[!train_idx], na.rm = TRUE) / samp_median_global)
 
-        norm_b[!is.finite(norm_b)] <- rnorm(
-          sum(!is.finite(norm_b)),
-          sd = sd(norm_b[is.finite(norm_b)], na.rm = TRUE) * 0.01
+        # Replace non-finite with tiny noise (original line 863)
+        norm[!is.finite(norm)] <- rnorm(
+          sum(!is.finite(norm)),
+          sd = sd(norm[is.finite(norm)], na.rm = TRUE) * 0.01
         )
 
-        normalized[batch. %in% b] <- norm_b
+        # Outlier fallback: additive correction for extreme outliers (original lines 868-870)
+        out <- boxplot.stats(norm, coef = 3)$out
+        norm[!train_idx][norm[!train_idx] %in% out] <-
+          (e_current_batch[j, !train_idx] -
+             (pred_test + samp_mean_local - samp_median_global))[
+               norm[!train_idx] %in% out]
+        norm[!train_idx][norm[!train_idx] < 0] <-
+          e_current_batch[j, !train_idx][norm[!train_idx] < 0]
+
+        normalized[batch. %in% b] <- norm
       }
 
       normalized
@@ -185,21 +200,25 @@ serrfR <- function(train,
 
   normed <- t(pred)
 
-  # Post-process: replace any remaining negatives / NAs with small positive noise
+  # Post-process: replace any remaining NAs / negatives (original lines 920-935)
   fix_negatives <- function(m) {
     for (i in seq_len(nrow(m))) {
-      pos_vals <- m[i, is.finite(m[i, ]) & m[i, ] > 0]
-      if (length(pos_vals) == 0) next
-      mn_pos <- min(pos_vals)
-      sd_pos <- sd(m[i, is.finite(m[i, ])], na.rm = TRUE) * 0.1
-      m[i, is.na(m[i, ])]   <- rnorm(sum(is.na(m[i, ])),   mean = mn_pos, sd = sd_pos)
-      m[i, m[i, ] < 0]      <- runif(sum(m[i, ] < 0, na.rm = TRUE)) * mn_pos
+      ok <- !is.na(m[i, ])
+      if (sum(ok) == 0) next
+      mn_pos <- min(m[i, ok], na.rm = TRUE)
+      sd_pos <- sd(m[i, ok], na.rm = TRUE) * 0.1
+      na_idx <- which(is.na(m[i, ]))
+      if (length(na_idx) > 0)
+        m[i, na_idx] <- rnorm(length(na_idx), mean = mn_pos, sd = sd_pos)
+      neg_idx <- which(m[i, ] < 0)
+      if (length(neg_idx) > 0)
+        m[i, neg_idx] <- runif(1) * min(m[i, m[i, ] > 0], na.rm = TRUE)
     }
     m
   }
 
-  normed_train  <- fix_negatives(normed[, sampleType. == "qc",    drop = FALSE])
-  normed_target <- fix_negatives(normed[, sampleType. == "sample", drop = FALSE])
+  normed_train  <- fix_negatives(normed[, sampleType. == "qc",     drop = FALSE])
+  normed_target <- fix_negatives(normed[, sampleType. == "sample",  drop = FALSE])
 
   list(normed_train = normed_train, normed_target = normed_target)
 }
