@@ -30,3 +30,6 @@ posthoc_qc_metrics.r
 # OS
 .DS_Store
 Thumbs.db
+
+# others, if used
+.claude/
