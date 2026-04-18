@@ -432,9 +432,6 @@ for (method in CORRECTION_METHODS) {
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref)
 
-  # Remove ltQC, not needed for final output
-  combined <- combined[, colData(combined)$QC != "ltQC"]
-
   # Remove RUV W-factor columns, not needed for final output
   w_cols <- grep("^W_", colnames(colData(combined)), value = TRUE)
   if (length(w_cols) > 0)
