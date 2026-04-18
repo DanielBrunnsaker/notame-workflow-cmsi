@@ -138,22 +138,28 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   rt_col     <- which(hdr == "Average Rt(min)")
   mz_col     <- which(hdr == "Average Mz")
   adduct_col <- which(hdr == "Adduct type")
+  fill_col   <- which(hdr == "Fill %")
 
   alignment_ids <- as.integer(feat_rows[[align_col]])
   mz_vals       <- parse_num(feat_rows[[mz_col]])
   rt_vals       <- parse_num(feat_rows[[rt_col]])
   adduct_vals   <- if (length(adduct_col) == 1)
     as.character(feat_rows[[adduct_col]]) else NA_character_
+  fill_vals     <- if (length(fill_col) == 1)
+    parse_num(feat_rows[[fill_col]]) else NA_real_
 
   feature_ids <- gsub("\\.", "_",
     sprintf("%s_%04d_%.4f_%.4f", mode_name, alignment_ids, mz_vals, rt_vals))
 
   abund_mat <- feat_rows[, sample_idx, drop = FALSE]
-  abund_mat[] <- lapply(abund_mat, function(col)
-    gsub(",", ".", as.character(col)))
+  abund_mat[] <- lapply(abund_mat, function(col) {
+    vals <- as.numeric(gsub(",", ".", as.character(col)))
+    vals[!is.na(vals) & vals < 0] <- 0
+    as.character(vals)
+  })
 
   # Assemble notame output layout 
-  N_FEAT <- 9 # number of feature metadata columns (must match feat_header length)
+  N_FEAT <- 10 # number of feature metadata columns (must match feat_header length)
 
   meta_row <- function(label, values)
     c(rep(NA_character_, N_FEAT - 1), label, as.character(values))
@@ -168,7 +174,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   )
 
   feat_header <- c("Feature_ID", "Split", "Alignment", "Average_Mz",
-                   "Average_Rt_min", "Column", "Ion_mode", "Adduct_type", "Flag",
+                   "Average_Rt_min", "Column", "Ion_mode", "Adduct_type", "Fill_pct", "Flag",
                    col_ids)
 
   feat_data_mat <- cbind(
@@ -180,6 +186,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     col_type,
     pol_lower,
     adduct_vals,
+    as.character(fill_vals),
     NA_character_,
     as.matrix(abund_mat)
   )

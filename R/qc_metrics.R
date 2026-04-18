@@ -101,6 +101,52 @@ eval_dist_ratio <- function(se, group1 = "ltQC", group2 = "Sample", n_pcs = 20) 
 }
 
 
+# Compute within-batch pairwise Euclidean distance preservation.
+# For each batch, computes all pairwise distances between biological samples in
+# both corrected and raw data, then correlates the two distance vectors (Spearman).
+# Returns the median correlation across batches.
+#
+# This avoids the cross-batch confound of the feature-wise signal_preservation_r:
+# within a batch the batch offset is constant and does not inflate pairwise
+# distances, so raw within-batch distances already reflect biology.
+eval_within_batch_dist_preservation <- function(se, ref_mat) {
+  if (is.null(ref_mat)) return(NA_real_)
+
+  cd       <- as.data.frame(colData(se))
+  samp_idx <- which(cd$QC == "Sample")
+  if (length(samp_idx) < 4) return(NA_real_)
+
+  batches <- unique(cd$Batch[samp_idx])
+
+  batch_cors <- vapply(batches, function(b) {
+    b_idx <- samp_idx[cd$Batch[samp_idx] == b]
+    if (length(b_idx) < 3) return(NA_real_)
+
+    ids        <- cd$Sample_ID[b_idx]
+    shared_ids <- intersect(ids, colnames(ref_mat))
+    if (length(shared_ids) < 3) return(NA_real_)
+
+    cur_cols <- b_idx[ids %in% shared_ids]
+    ref_cols <- match(shared_ids, colnames(ref_mat))
+
+    shared_feat <- intersect(rownames(assay(se, 1)), rownames(ref_mat))
+    if (length(shared_feat) < 2) return(NA_real_)
+
+    mat_cur <- assay(se, 1)[shared_feat, cur_cols, drop = FALSE]
+    mat_ref <- ref_mat[shared_feat, ref_cols, drop = FALSE]
+
+    d_cur <- as.vector(dist(t(mat_cur)))
+    d_ref <- as.vector(dist(t(mat_ref)))
+
+    ok <- is.finite(d_cur) & is.finite(d_ref)
+    if (sum(ok) < 3) return(NA_real_)
+    cor(d_cur[ok], d_ref[ok], method = "spearman")
+  }, numeric(1))
+
+  round(median(batch_cors, na.rm = TRUE), 3)
+}
+
+
 # Compute median feature-wise Spearman correlation between corrected and a
 # reference dataset (both restricted to biological samples only).
 # Features present in both are used; returns NA if fewer than 2 features match.
@@ -141,6 +187,70 @@ eval_signal_preservation <- function(se, ref_mat) {
 }
 
 
+# Median R² of batch as a factor across biological samples, per feature.
+# Computed entirely on corrected data — no raw reference needed.
+# Lower = less remaining batch structure after correction.
+eval_remaining_batch_r2 <- function(se) {
+  samp_idx <- which(colData(se)$QC == "Sample")
+  if (length(samp_idx) < 4) return(NA_real_)
+
+  batch <- as.character(colData(se)$Batch[samp_idx])
+  if (length(unique(batch)) < 2) return(NA_real_)
+
+  mat <- assay(se, 1)[, samp_idx, drop = FALSE]
+
+  r2_per_feature <- apply(mat, 1, function(x) {
+    ok <- is.finite(x)
+    if (sum(ok) < 4) return(NA_real_)
+    x_ok <- x[ok]
+    b_ok <- batch[ok]
+    if (length(unique(b_ok)) < 2) return(NA_real_)
+    grand_mean <- mean(x_ok)
+    ss_total   <- sum((x_ok - grand_mean)^2)
+    if (ss_total == 0) return(NA_real_)
+    batch_means <- tapply(x_ok, b_ok, mean)
+    batch_n     <- tapply(x_ok, b_ok, length)
+    ss_between  <- sum(batch_n * (batch_means - grand_mean)^2)
+    ss_between / ss_total
+  })
+
+  round(median(r2_per_feature, na.rm = TRUE), 3)
+}
+
+
+# Median absolute Spearman correlation of QC sample abundances with injection
+# order, computed per feature per batch, then summarised as median across all
+# feature × batch combinations.
+# Computed entirely on corrected data — no raw reference needed.
+# Lower = less remaining within-batch drift after correction.
+eval_remaining_drift <- function(se) {
+  qc_idx <- which(colData(se)$QC == "QC")
+  if (length(qc_idx) < 4) return(NA_real_)
+
+  cd      <- as.data.frame(colData(se))
+  batches <- unique(cd$Batch[qc_idx])
+  mat     <- assay(se, 1)
+
+  batch_cors <- vapply(batches, function(b) {
+    b_idx <- qc_idx[cd$Batch[qc_idx] == b]
+    if (length(b_idx) < 3) return(NA_real_)
+
+    inj_order <- cd$Injection_order[b_idx]
+    sub_mat   <- mat[, b_idx, drop = FALSE]
+
+    feature_cors <- apply(sub_mat, 1, function(x) {
+      ok <- is.finite(x)
+      if (sum(ok) < 3) return(NA_real_)
+      abs(cor(x[ok], inj_order[ok], method = "spearman"))
+    })
+
+    median(feature_cors, na.rm = TRUE)
+  }, numeric(1))
+
+  round(median(batch_cors, na.rm = TRUE), 3)
+}
+
+
 # Save per-feature QC metrics and a one-row summary for one correction method.
 # Files are written to interdir so results from multiple methods can be compared.
 #
@@ -153,6 +263,12 @@ eval_signal_preservation <- function(se, ref_mat) {
 #   D_ratio_r              — MAD(QC) / MAD(Sample); lower = better separation
 #   median_sample_MAD      — median of per-feature MAD across biological samples
 #   signal_preservation_r  — median feature-wise Spearman cor vs raw uncorrected data
+#   within_batch_dist_r    — median Spearman cor of within-batch pairwise distances
+#                            (corrected vs raw); unaffected by between-batch structure
+#   remaining_batch_r2     — median R² of batch as factor on biological samples;
+#                            lower = less remaining batch effect
+#   remaining_drift_r      — median absolute Spearman cor of QC abundance with
+#                            injection order within batches; lower = less drift remaining
 #
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
@@ -186,6 +302,9 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
     pct_RSD_lt_30         = round(100 * mean(rsd < 0.30),   1),
     median_sample_MAD     = round(median(sample_mads, na.rm = TRUE), 2),
     signal_preservation_r = round(eval_signal_preservation(se, raw_ref), 3),
+    within_batch_dist_r   = round(eval_within_batch_dist_preservation(se, raw_ref), 3),
+    remaining_batch_r2    = round(eval_remaining_batch_r2(se), 3),
+    remaining_drift_r     = round(eval_remaining_drift(se), 3),
     stringsAsFactors      = FALSE
   )
 

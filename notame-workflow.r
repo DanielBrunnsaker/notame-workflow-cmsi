@@ -18,7 +18,8 @@ source("R/drift_correction.R")
 source("R/correction_methods.R")
 source("R/serrf.R")
 
-registerDoParallel(cores = parallel::detectCores() - 1)
+n_cores_env <- Sys.getenv("N_CORES", unset = "")
+registerDoParallel(cores = if (n_cores_env == "") parallel::detectCores() - 1 else as.integer(n_cores_env))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SETTINGS
@@ -56,7 +57,7 @@ Environment variables (all optional, hardcoded defaults shown):
                         Default: 0.60
 
   SAMPLE_DETECTION_LIMIT  Min fraction of biological samples a feature must be detected in
-                        Default: 0.40
+                        Default: 0.20
 
   BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(Blank)
                         Default: 1
@@ -72,12 +73,19 @@ Environment variables (all optional, hardcoded defaults shown):
                         Default: TRUE
                         Values:  TRUE | FALSE
 
+  N_CORES               Number of cores to use for parallelisation.
+                        Default: all available cores minus one
+
   LOW_INT_FILTER        Remove features where the Nth percentile of abundance (NAs treated as 0)
-                        is below this threshold. Alternative to blank filtering when no blanks
-                        are available. Set to empty string to skip (default).
+                        is below this absolute threshold. Overrides LOW_INT_FILTER_FRAC if both set.
                         Default: (disabled)
 
-  LOW_INT_PERCENTILE    Percentile to use for LOW_INT_FILTER (0–1).
+  LOW_INT_FILTER_FRAC   Data-driven low-intensity filter. Sets the cutoff to this fraction of the
+                        mean of per-feature pN intensities (where N = LOW_INT_PERCENTILE).
+                        E.g. 0.10 = 10% of the mean p80. Ignored if LOW_INT_FILTER is set.
+                        Default: 0.10
+
+  LOW_INT_PERCENTILE    Percentile to use for LOW_INT_FILTER / LOW_INT_FILTER_FRAC (0–1).
                         Default: 0.8
 
 ")
@@ -107,11 +115,11 @@ BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip")) NA_real_ else
                if (blank_ratio_env == "") 1 else
                as.numeric(blank_ratio_env)
 
-# Low-intensity filter: remove features where the Nth percentile of abundance
-# (NAs treated as 0) is below this threshold. 
-# Set to NA to skip (default).
 LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))
+LOW_INT_FILTER_FRAC <- as.numeric(get_env("LOW_INT_FILTER_FRAC", "0.10"))
 LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE", "0.8"))
+FILL_FILTER         <- as.numeric(get_env("FILL_FILTER", "0.10"))
+QC_RSD_FILTER       <- as.numeric(get_env("QC_RSD_FILTER", "0.80"))
 
 # Correction methods to run. All listed methods are executed and saved to
 # separate subfolders. A comparison table is printed at the end.
@@ -195,17 +203,38 @@ n_after_blank <- nrow(data)
 # Remove non-analytical samples. ltQC is kept so we can use it to evaluate later on.
 data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST")]
 
-# Low-intensity filter: remove features where the Nth percentile of abundance
-# across biological + QC samples is below LOW_INT_FILTER.
-if (!is.na(LOW_INT_FILTER)) {
-  mat_int <- assay(data)
-  mat_int[is.na(mat_int)] <- 0
+# Low-intensity filter
+{
+  mat_int <- assay(data); mat_int[is.na(mat_int)] <- 0
   int_quantile <- apply(mat_int, 1, quantile, probs = LOW_INT_PERCENTILE)
-  data <- data[int_quantile >= LOW_INT_FILTER, ]
-  cat(sprintf("Low-intensity filter (p%.0f < %.4g): removed %d features\n",
-              LOW_INT_PERCENTILE * 100, LOW_INT_FILTER, sum(int_quantile < LOW_INT_FILTER)))
+  mean_p <- mean(int_quantile[int_quantile > 0])
+
+  low_int_cutoff <- if (!is.na(LOW_INT_FILTER)) {
+    LOW_INT_FILTER
+  } else if (!is.na(LOW_INT_FILTER_FRAC)) {
+    LOW_INT_FILTER_FRAC * mean_p
+  } else {
+    NA_real_
+  }
+
+  if (!is.na(low_int_cutoff)) {
+    n_removed <- sum(int_quantile < low_int_cutoff)
+    data <- data[int_quantile >= low_int_cutoff, ]
+    cat(sprintf("Low-intensity filter (p%.0f < %.4g): removed %d features\n",
+                LOW_INT_PERCENTILE * 100, low_int_cutoff, n_removed))
+  }
 }
 n_after_lowint <- nrow(data)
+
+# Fill filter: remove features where MSDIAL Fill % is below threshold
+fill_pct <- as.numeric(rowData(data)$Fill_pct)
+if (all(is.na(fill_pct))) {
+  message("WARNING: Fill_pct not available in feature metadata — skipping fill filter")
+  n_after_fill <- n_after_lowint
+} else {
+  data <- data[is.na(fill_pct) | fill_pct >= FILL_FILTER, ]
+  n_after_fill <- nrow(data)
+}
 
 # Remove features with low detection in QC samples
 data <- flag_detection(data, qc_limit = QC_DETECTION_LIMIT)
@@ -226,19 +255,60 @@ zero_var <- apply(assay(data), 1, function(x) {
 data <- data[!zero_var, ]
 n_after_zerovar <- nrow(data)
 
+# Pre-imputation QC-RSD filter: remove features with RSD > QC_RSD_FILTER in QC samples
+qc_idx  <- which(colData(data)$QC == "QC")
+qc_mat  <- assay(data)[, qc_idx, drop = FALSE]
+qc_rsd  <- apply(qc_mat, 1, function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 2 || mean(x) == 0) return(NA_real_)
+  sd(x) / mean(x)
+})
+n_na_rsd <- sum(is.na(qc_rsd))
+if (n_na_rsd > 0)
+  message(sprintf("QC-RSD filter: %d features had insufficient QC observations to compute RSD — kept by default", n_na_rsd))
+data <- data[is.na(qc_rsd) | qc_rsd <= QC_RSD_FILTER, ]
+n_after_qcrsd <- nrow(data)
+
 # Save pre-filtering summary
 filter_log <- data.frame(
-  step               = c("Blank filter", "Low-intensity filter", "QC detection", "Sample detection", "Zero variance"),
-  features_removed   = c(n_before      - n_after_blank,
-                         n_after_blank - n_after_lowint,
-                         n_after_lowint - n_after_qc,
-                         n_after_qc    - n_after_sample,
-                         n_after_sample - n_after_zerovar),
-  features_remaining = c(n_after_blank, n_after_lowint, n_after_qc, n_after_sample, n_after_zerovar)
+  step               = c("Blank filter",
+                         if (!is.na(low_int_cutoff)) sprintf("Low-intensity filter (p%.0f >= %.4g)", LOW_INT_PERCENTILE * 100, low_int_cutoff) else "Low-intensity filter (disabled)",
+                         sprintf("Fill filter (>= %.2g)", FILL_FILTER),
+                         sprintf("QC detection (>= %.0f%%)", QC_DETECTION_LIMIT * 100),
+                         sprintf("Sample detection (>= %.0f%%)", SAMPLE_DETECTION_LIMIT * 100),
+                         "Zero variance",
+                         sprintf("Pre-correction QC-RSD filter (<= %.0f%% in QC)", QC_RSD_FILTER * 100)),
+  features_removed   = c(n_before       - n_after_blank,
+                         n_after_blank  - n_after_lowint,
+                         n_after_lowint - n_after_fill,
+                         n_after_fill   - n_after_qc,
+                         n_after_qc     - n_after_sample,
+                         n_after_sample - n_after_zerovar,
+                         n_after_zerovar - n_after_qcrsd),
+  features_remaining = c(n_after_blank, n_after_lowint, n_after_fill, n_after_qc, n_after_sample, n_after_zerovar, n_after_qcrsd)
 )
 cat("\n--- Pre-filtering summary ---\n")
 print(filter_log, row.names = FALSE)
 write.csv(filter_log, file.path(interdir, "prefilter_log.csv"), row.names = FALSE)
+
+writeLines(c(
+  paste("Run timestamp:        ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+  paste("IN_XLSX:              ", in_xlsx),
+  paste("POLARITY:             ", polarity),
+  paste("CORRECTION_METHODS:  ", paste(CORRECTION_METHODS, collapse = ", ")),
+  paste("QC_DETECTION_LIMIT:  ", QC_DETECTION_LIMIT),
+  paste("SAMPLE_DETECTION_LIMIT:", SAMPLE_DETECTION_LIMIT),
+  paste("BLANK_RATIO:         ", BLANK_RATIO),
+  paste("LOW_INT_FILTER:      ", if (!is.na(LOW_INT_FILTER)) LOW_INT_FILTER else "(disabled)"),
+  paste("LOW_INT_FILTER_FRAC: ", LOW_INT_FILTER_FRAC),
+  paste("LOW_INT_PERCENTILE:  ", LOW_INT_PERCENTILE),
+  paste("LOW_INT_CUTOFF:      ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
+  paste("FILL_FILTER:         ", FILL_FILTER),
+  paste("QC_RSD_FILTER:       ", QC_RSD_FILTER),
+  paste("RUV_K:               ", RUV_K),
+  paste("LOESS_SPAN:          ", LOESS_SPAN),
+  paste("N_CORES:             ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
+), file.path(interdir, "run_parameters.txt"))
 
 # Sanity check: injection order must be finite for all samples
 bad_inj <- !is.finite(colData(data)$Injection_order)
