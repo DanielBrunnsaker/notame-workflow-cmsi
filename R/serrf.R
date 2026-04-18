@@ -26,7 +26,6 @@ serrfR <- function(train,
                    target,
                    num        = 10,
                    batch.,
-                   time.,
                    sampleType.,
                    cl) {
 
@@ -74,10 +73,9 @@ serrfR <- function(train,
   # ── Parallel per-feature correction ─────────────────────────────────────────
   pred <- parallel::parSapply(
     cl, X = seq_len(nrow(all)),
-    function(j, all, batch., ranger, sampleType., time., num, corrs_train, corrs_target) {
+    function(j, all, batch., sampleType., num, corrs_train, corrs_target) {
 
       normalized <- rep(0, ncol(all))
-      print(j)
 
       for (b in levels(batch.)) {
         e_current_batch <- all[, batch. %in% b, drop = FALSE]
@@ -195,7 +193,7 @@ serrfR <- function(train,
 
       normalized
     },
-    all, batch., ranger, sampleType., time., num, corrs_train, corrs_target
+    all, batch., sampleType., num, corrs_train, corrs_target
   )
 
   normed <- t(pred)
@@ -236,7 +234,7 @@ serrfR <- function(train,
 #   data               SummarizedExperiment from notame pipeline (pre-imputation)
 #   num                number of correlated features to use as RF predictors
 #   detectcores_ratio  fraction of available CPU cores to use for parallelism
-correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
+correct_serrf <- function(data, num = 10) {
   library(ranger)
   library(parallel)
 
@@ -246,12 +244,6 @@ correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
   # ── 2. Extract matrices and metadata ────────────────────────────────────────
   e_all <- assay(data, 1)
   cd    <- as.data.frame(colData(data))
-
-  # Build a globally-unique injection time by combining batch + within-batch order.
-  # This ensures time. is monotone across batches even when Injection_order restarts.
-  batch_rank <- as.integer(factor(cd$Batch, levels = sort(unique(cd$Batch))))
-  max_inj    <- max(cd$Injection_order, na.rm = TRUE)
-  global_time <- (batch_rank - 1L) * (max_inj + 1L) + cd$Injection_order
 
   stype <- ifelse(cd$QC == "QC",     "qc",
            ifelse(cd$QC == "Sample",  "sample",
@@ -280,10 +272,11 @@ correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
   e_ltqc <- if (length(ltqc_idx) > 0) e_all[, ltqc_idx, drop = FALSE] else NULL
 
   batch_all <- as.character(cd$Batch)
-  time_all  <- global_time
 
   # ── 5. Parallel cluster ──────────────────────────────────────────────────────
-  n_cores <- max(1L, floor(parallel::detectCores() * detectcores_ratio))
+  n_cores_env <- Sys.getenv("N_CORES", unset = "")
+  n_cores <- if (n_cores_env == "") parallel::detectCores() - 1L else as.integer(n_cores_env)
+  n_cores <- max(1L, n_cores)
   message("==> SERRF: starting ", n_cores, " parallel worker(s)")
   cl <- parallel::makeCluster(n_cores)
   on.exit(parallel::stopCluster(cl), add = TRUE)
@@ -295,14 +288,12 @@ correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
   idx_qs   <- c(qc_idx, samp_idx)
   stype_qs <- c(rep("qc", length(qc_idx)), rep("sample", length(samp_idx)))
   batch_qs <- factor(batch_all[idx_qs])
-  time_qs  <- time_all[idx_qs]
 
   res_samp <- serrfR(
     train       = e_qc,
     target      = e_samp,
     num         = num,
     batch.      = batch_qs,
-    time.       = time_qs,
     sampleType. = stype_qs,
     cl          = cl
   )
@@ -317,14 +308,12 @@ correct_serrf <- function(data, num = 10, detectcores_ratio = 0.5) {
     idx_ql   <- c(qc_idx, ltqc_idx)
     stype_ql <- c(rep("qc", length(qc_idx)), rep("sample", length(ltqc_idx)))
     batch_ql <- factor(batch_all[idx_ql])
-    time_ql  <- time_all[idx_ql]
 
     res_ltqc <- serrfR(
       train       = e_qc,
       target      = e_ltqc,
       num         = num,
       batch.      = batch_ql,
-      time.       = time_ql,
       sampleType. = stype_ql,
       cl          = cl
     )
