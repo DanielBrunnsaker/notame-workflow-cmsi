@@ -75,6 +75,12 @@ Environment variables (all optional, hardcoded defaults shown):
   N_CORES               Number of cores to use for parallelisation.
                         Default: all available cores minus one
 
+  NORMALIZATION         Post-correction normalization method.
+                        Uses pooled QC samples as reference; falls back to median
+                        of biological samples if no QC samples are present.
+                        Default: none
+                        Values:  none | pqn
+
   LOW_INT_FILTER        Remove features where the Nth percentile of abundance (NAs treated as 0)
                         is below this absolute threshold. Overrides LOW_INT_FILTER_FRAC if both set.
                         Default: (disabled)
@@ -136,6 +142,11 @@ CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ","
 
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
 RUV_K <- as.integer(get_env("RUV_K", "3"))
+
+# PQN normalization: applied after correction to account for dilution effects.
+# Uses pooled QC samples as reference; falls back to median of biological samples.
+# Set to "none" to skip (default).
+NORMALIZATION <- get_env("NORMALIZATION", "none")
 
 # TODO: Add span-control variable for QC-RSC
 # QCRSC_SPAN <- 0
@@ -393,6 +404,24 @@ for (method in CORRECTION_METHODS) {
 
   combined <- result$post
   obs_mask <- result$obs_mask  # pre-imputation missingness mask (may be NULL)
+
+  # PQN normalization
+  if (NORMALIZATION == "pqn") {
+    tryCatch({
+      library(pmp)
+      classes <- colData(combined)$QC
+      qc_present <- any(classes == "QC")
+      combined <- pqn_normalisation(
+        df        = combined,
+        classes   = classes,
+        qc_label  = if (qc_present) "QC" else NULL
+      )
+      message("==> PQN normalization applied (reference: ",
+              if (qc_present) "pooled QC" else "median of samples", ")")
+    }, error = function(e) {
+      message("WARNING: PQN normalization failed: ", conditionMessage(e))
+    })
+  }
 
   # QC plots: post-correction only
   tryCatch(
