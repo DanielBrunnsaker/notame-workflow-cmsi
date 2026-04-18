@@ -11,6 +11,14 @@ impute_with_mask <- function(data, ...) {
   list(data = imputed, mask = mask)
 }
 
+correct_none <- function(data) {
+  message("==> No correction (imputation only)")
+  imp      <- impute_with_mask(data, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  list(pre = combined, post = combined, obs_mask = obs_mask)
+}
+
 correct_notame <- function(data, ruv_k) {
   message("==> Drift correction (notame cubic spline)")
   combined <- merge_notame_sets(
@@ -58,88 +66,6 @@ correct_loess_combat <- function(data, loess_span) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-
-correct_loess_limma <- function(data, loess_span) {
-  library(limma)
-
-  message("==> Drift correction (LOESS)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      message("  Batch ", unique(colData(se_b)$Batch))
-      loess_correct_batch(se_b, span = loess_span)
-    }),
-    merge = "samples"
-  )
-
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
-  pre      <- combined
-
-  message("==> Between-batch correction (limma::removeBatchEffect)")
-  assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
-    x     = assay(combined, 1),
-    batch = as.factor(colData(combined)$Batch)
-  )
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-
-correct_linear_combat <- function(data) {
-  library(sva)
-
-  message("==> Drift correction (linear/ANCOVA)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      message("  Batch ", unique(colData(se_b)$Batch))
-      linear_correct_batch(se_b)
-    }),
-    merge = "samples"
-  )
-
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
-  pre      <- combined
-
-  message("==> Between-batch correction (ComBat)")
-  assay(combined, 1, withDimnames = FALSE) <- ComBat(
-    dat   = assay(combined, 1),
-    batch = as.factor(colData(combined)$Batch)
-  )
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_linear_limma <- function(data) {
-  library(limma)
-
-  message("==> Drift correction (linear/ANCOVA)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      message("  Batch ", unique(colData(se_b)$Batch))
-      linear_correct_batch(se_b)
-    }),
-    merge = "samples"
-  )
-
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
-  pre      <- combined
-
-  message("==> Between-batch correction (limma::removeBatchEffect)")
-  assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
-    x     = assay(combined, 1),
-    batch = as.factor(colData(combined)$Batch)
-  )
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
 
 
 correct_combat_only <- function(data) {

@@ -48,10 +48,9 @@ Environment variables (all optional, hardcoded defaults shown):
                         Values:  POS | NEG
 
   CORRECTION_METHODS    Comma-separated list of correction methods to run
-                        Default: loess_combat,notame,pmp_qcrsc,waveica,batchcorr
-                        Values:  notame | loess_combat | loess_limma |
-                                 pmp_qcrsc | combat_only | batchcorr | waveica |
-                                 linear_combat | linear_limma | serrf
+                        Default: none,notame
+                        Values:  none | notame | loess_combat | pmp_qcrsc |
+                                 combat_only | batchcorr | waveica | serrf
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -133,7 +132,7 @@ QC_RSD_FILTER       <- as.numeric(get_env("QC_RSD_FILTER", "0.80"))
 #   "linear_combat" — per-batch linear drift correction + ComBat
 #   "linear_limma"  — per-batch linear drift correction + limma::removeBatchEffect
 #   "serrf"         — Systematic Error Removal using Random Forest (Fan et al. 2019)
-CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "loess_combat,notame,pmp_qcrsc,waveica,batchcorr"), ",")[[1]]
+CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
 # Number of unwanted variation factors for RUV (only used by RUV, i.e. notame).
 RUV_K <- as.integer(get_env("RUV_K", "3"))
@@ -141,7 +140,7 @@ RUV_K <- as.integer(get_env("RUV_K", "3"))
 # TODO: Add span-control variable for QC-RSC
 # QCRSC_SPAN <- 0
 
-# LOESS span for drift correction (used by loess_combat, loess_limma).
+# LOESS span for drift correction (used by loess_combat).
 # 0.75 is the default; decrease for tighter fit, increase for smoother.
 LOESS_SPAN <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 
@@ -374,17 +373,15 @@ for (method in CORRECTION_METHODS) {
   # Correction ──────────────────────────────────────────────────────────────
   result <- tryCatch({
     switch(method,
-      notame        = correct_notame(data, RUV_K),
-      loess_combat  = correct_loess_combat(data, LOESS_SPAN),
-      loess_limma   = correct_loess_limma(data, LOESS_SPAN),
-      pmp_qcrsc     = correct_pmp_qcrsc(data),
-      combat_only   = correct_combat_only(data),
-      batchcorr     = correct_batchcorr(data),
-      waveica       = correct_waveica(data),
-      linear_combat = correct_linear_combat(data),
-      linear_limma  = correct_linear_limma(data),
-      serrf         = correct_serrf(data),
-      stop("Unknown method '", method, "'. Valid: notame, loess_combat, loess_limma, pmp_qcrsc, combat_only, batchcorr, waveica, linear_combat, linear_limma, serrf")
+      none         = correct_none(data),
+      notame       = correct_notame(data, RUV_K),
+      loess_combat = correct_loess_combat(data, LOESS_SPAN),
+      pmp_qcrsc    = correct_pmp_qcrsc(data),
+      combat_only  = correct_combat_only(data),
+      batchcorr    = correct_batchcorr(data),
+      waveica      = correct_waveica(data),
+      serrf        = correct_serrf(data),
+      stop("Unknown method '", method, "'. Valid: none, notame, loess_combat, pmp_qcrsc, combat_only, batchcorr, waveica, serrf")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
