@@ -166,7 +166,9 @@ SAVE_PRE_CORRECTION_PLOTS <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TR
 
 dir.create(interdir, showWarnings = FALSE, recursive = TRUE)
 
-mode_name <- msdial_to_notame(in_xlsx, out_xlsx)
+msdial_result     <- msdial_to_notame(in_xlsx, out_xlsx)
+mode_name         <- msdial_result$mode
+msdial_annotations <- msdial_result$annotations
 
 message("==> Importing")
 
@@ -373,6 +375,44 @@ save_correction_summary(assess_quality(data), method = "uncorrected", interdir =
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.csv"), row.names = FALSE)
 
+write_annotations <- function(se, annot_df, file) {
+  ids <- rownames(se)
+  rd  <- as.data.frame(rowData(se))
+
+  name_col <- "Metabolite name"
+  is_annotated <- function(rows) {
+    if (!name_col %in% colnames(rows)) return(rep(FALSE, nrow(rows)))
+    v <- rows[[name_col]]
+    !is.na(v) & nchar(trimws(v)) > 0 & !grepl("^Unknown$", v, ignore.case = TRUE)
+  }
+
+  out <- lapply(ids, function(id) {
+    row <- annot_df[annot_df$Feature_ID == id, , drop = FALSE]
+    annotation_source <- "Representative feature"
+
+    # If representative lacks annotation, try cluster members
+    if (nrow(row) == 0 || !is_annotated(row)) {
+      members_raw <- if ("Cluster_features" %in% colnames(rd)) rd[id, "Cluster_features"] else NA
+      if (!is.na(members_raw) && nchar(trimws(members_raw)) > 0) {
+        member_ids  <- trimws(strsplit(as.character(members_raw), ";")[[1]])
+        member_rows <- annot_df[annot_df$Feature_ID %in% member_ids, , drop = FALSE]
+        annotated   <- member_rows[is_annotated(member_rows), , drop = FALSE]
+        if (nrow(annotated) > 0) {
+          row <- annotated[1, , drop = FALSE]
+          row$Feature_ID <- id
+          annotation_source <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
+        }
+      }
+    }
+
+    if (nrow(row) == 0) row <- annot_df[NA_integer_, ]
+    row$Annotation_source <- annotation_source
+    row
+  })
+
+  write.xlsx(do.call(rbind, out), file, colNames = TRUE, rowNames = FALSE)
+}
+
 for (method in CORRECTION_METHODS) {
   message("\n############################################################")
   message("# METHOD: ", toupper(method))
@@ -445,12 +485,14 @@ for (method in CORRECTION_METHODS) {
   # Save full (unclustered) peak table with QC metrics
   write_feature_table(combined,  file = file.path(method_out, "feature_table_full.xlsx"))
   write_feature_info(combined,   file = file.path(method_out, "feature_info_full.xlsx"))
+  write_annotations(combined,    msdial_annotations, file.path(method_out, "annotations_full.xlsx"))
 
   clustered <- cluster_features(combined, all_features = TRUE)
   clustered  <- compress_clusters(clustered)
 
   write_feature_table(clustered, file = file.path(method_out, "feature_table.xlsx"))
   write_feature_info(clustered,  file = file.path(method_out, "feature_info.xlsx"))
+  write_annotations(clustered,   msdial_annotations, file.path(method_out, "annotations.xlsx"))
 
   # Global RSD filter: features with RSD_r < 0.3 across all QC samples
   global_keep  <- !is.na(rowData(combined)$RSD_r) & rowData(combined)$RSD_r < 0.3
@@ -459,8 +501,10 @@ for (method in CORRECTION_METHODS) {
     clustered_g  <- compress_clusters(cluster_features(combined_g, all_features = TRUE))
     write_feature_table(combined_g,  file = file.path(method_out, "feature_table_full_rsd30.xlsx"))
     write_feature_info(combined_g,   file = file.path(method_out, "feature_info_full_rsd30.xlsx"))
+    write_annotations(combined_g,    msdial_annotations, file.path(method_out, "annotations_full_rsd30.xlsx"))
     write_feature_table(clustered_g, file = file.path(method_out, "feature_table_rsd30.xlsx"))
     write_feature_info(clustered_g,  file = file.path(method_out, "feature_info_rsd30.xlsx"))
+    write_annotations(clustered_g,   msdial_annotations, file.path(method_out, "annotations_rsd30.xlsx"))
   }, error = function(e) message("WARNING: global RSD filter export failed (", method, "): ", conditionMessage(e)))
 
   # Batchwise RSD filter: features with RSD_r < 0.3 in >= 50% of batches
@@ -473,8 +517,10 @@ for (method in CORRECTION_METHODS) {
       clustered_b    <- compress_clusters(cluster_features(combined_b, all_features = TRUE))
       write_feature_table(combined_b,  file = file.path(method_out, "feature_table_full_batchrsd30.xlsx"))
       write_feature_info(combined_b,   file = file.path(method_out, "feature_info_full_batchrsd30.xlsx"))
+      write_annotations(combined_b,    msdial_annotations, file.path(method_out, "annotations_full_batchrsd30.xlsx"))
       write_feature_table(clustered_b, file = file.path(method_out, "feature_table_batchrsd30.xlsx"))
       write_feature_info(clustered_b,  file = file.path(method_out, "feature_info_batchrsd30.xlsx"))
+      write_annotations(clustered_b,   msdial_annotations, file.path(method_out, "annotations_batchrsd30.xlsx"))
     }, error = function(e) message("WARNING: batchwise RSD filter export failed (", method, "): ", conditionMessage(e)))
   }
 }
