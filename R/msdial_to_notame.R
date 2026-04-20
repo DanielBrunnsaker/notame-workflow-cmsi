@@ -139,6 +139,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   mz_col     <- which(hdr == "Average Mz")
   adduct_col <- which(hdr == "Adduct type")
   fill_col   <- which(hdr == "Fill %")
+  name_col   <- which(hdr == "Metabolite name")
 
   alignment_ids <- as.integer(feat_rows[[align_col]])
   mz_vals       <- parse_num(feat_rows[[mz_col]])
@@ -147,6 +148,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     as.character(feat_rows[[adduct_col]]) else NA_character_
   fill_vals     <- if (length(fill_col) == 1)
     parse_num(feat_rows[[fill_col]]) else NA_real_
+  name_vals     <- if (length(name_col) == 1)
+    as.character(feat_rows[[name_col]]) else NA_character_
 
   feature_ids <- gsub("\\.", "_",
     sprintf("%s_%04d_%.4f_%.4f", mode_name, alignment_ids, mz_vals, rt_vals))
@@ -158,8 +161,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     as.character(vals)
   })
 
-  # Assemble notame output layout 
-  N_FEAT <- 10 # number of feature metadata columns (must match feat_header length)
+  # Assemble notame output layout
+  N_FEAT <- 11 # number of feature metadata columns (must match feat_header length)
 
   meta_row <- function(label, values)
     c(rep(NA_character_, N_FEAT - 1), label, as.character(values))
@@ -174,7 +177,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   )
 
   feat_header <- c("Feature_ID", "Split", "Alignment", "Average_Mz",
-                   "Average_Rt_min", "Column", "Ion_mode", "Adduct_type", "Fill_pct", "Flag",
+                   "Average_Rt_min", "Column", "Ion_mode", "Adduct_type", "Metabolite_name",
+                   "Fill_pct", "Flag",
                    col_ids)
 
   feat_data_mat <- cbind(
@@ -186,6 +190,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     col_type,
     pol_lower,
     adduct_vals,
+    name_vals,
     as.character(fill_vals),
     NA_character_,
     as.matrix(abund_mat)
@@ -194,8 +199,19 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   out_mat <- rbind(meta_block, feat_header, feat_data_mat)
   out_df  <- as.data.frame(out_mat, stringsAsFactors = FALSE)
 
-  # Write 
+  # Write notame-formatted file
   write.xlsx(out_df, out_xlsx, colNames = FALSE, rowNames = FALSE)
   message("notame-ready file written: ", out_xlsx, " (mode: ", mode_name, ")")
+
+  # Write full MSDIAL annotations file (all non-sample metadata columns)
+  annot_col_idx <- which(!is_sample & !is.na(hdr) & nchar(trimws(hdr)) > 0)
+  annot_df <- as.data.frame(feat_rows[, annot_col_idx, drop = FALSE], stringsAsFactors = FALSE)
+  colnames(annot_df) <- hdr[annot_col_idx]
+  annot_df <- cbind(Feature_ID = feature_ids, annot_df)
+
+  annot_xlsx <- sub("\\.xlsx$", "_annotations.xlsx", out_xlsx)
+  write.xlsx(annot_df, annot_xlsx, colNames = TRUE, rowNames = FALSE)
+  message("MSDIAL annotations written: ", annot_xlsx)
+
   invisible(mode_name)
 }

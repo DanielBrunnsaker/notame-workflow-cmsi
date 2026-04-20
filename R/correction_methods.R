@@ -32,9 +32,14 @@ correct_notame <- function(data, ruv_k) {
   obs_mask <- imp$mask
   pre      <- combined
 
-  message("==> Batch correction (RUV, k=", ruv_k, ")")
-  qc_idx   <- which(colData(combined)$QC == "QC")
-  combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Batch correction (RUV, k=", ruv_k, ")")
+    qc_idx   <- which(colData(combined)$QC == "QC")
+    combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
+  }
 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
