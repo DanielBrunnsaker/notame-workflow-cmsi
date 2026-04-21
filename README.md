@@ -6,7 +6,7 @@ Built around the [notame](https://github.com/antonvsdata/notame) R package.
 
 ## Overview
 
-1. **MSDIAL conversion** — parses MSDIAL alignment exports, extracts sample metadata from filenames, and converts to notame-compatible format
+1. **MSDIAL conversion** — parses MSDIAL alignment exports, extracts sample metadata from filenames, and converts to notame-compatible format. Note that this requires the sample names to have the following format: `DATE_BATCH_COLUMN_POLARITY_SAMPLENAME_INJECTIONNUMBER`.
 2. **Feature filtering** — sequential pre-correction filters to remove low-quality features
 3. **Drift and batch correction** — one or more correction methods run in parallel, each saved to its own output folder
 4. **Imputation** — Uses Random Forest to impute any missing values. 
