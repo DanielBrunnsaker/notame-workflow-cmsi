@@ -200,7 +200,7 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   # Build full MSDIAL annotations table (returned for per-method writing in workflow)
   annot_col_idx <- which(!is_sample & !is.na(hdr) & nchar(trimws(hdr)) > 0)
   annot_df <- as.data.frame(feat_rows[, annot_col_idx, drop = FALSE], stringsAsFactors = FALSE)
-  colnames(annot_df) <- hdr[annot_col_idx]
+  colnames(annot_df) <- make.unique(hdr[annot_col_idx])
   annot_df <- cbind(Feature_ID = feature_ids, annot_df)
 
   invisible(list(mode = mode_name, annotations = annot_df))

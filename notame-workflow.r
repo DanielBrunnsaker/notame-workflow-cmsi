@@ -404,7 +404,7 @@ write_annotations <- function(se, annot_df, file) {
         member_rows <- annot_df[annot_df$Feature_ID %in% member_ids, , drop = FALSE]
         annotated   <- member_rows[is_annotated(member_rows[[name_col]]), , drop = FALSE]
         if (nrow(annotated) == 0) next
-        out[i, colnames(annot_df)] <- annotated[1, ]
+        out[i, seq_len(ncol(annot_df))] <- annotated[1, ]
         out$Feature_ID[i]        <- id
         out$Annotation_source[i] <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
       }
