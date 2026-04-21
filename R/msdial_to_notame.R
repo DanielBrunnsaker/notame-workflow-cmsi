@@ -99,20 +99,14 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     "Sample"
   }
 
-  extract_batch <- function(batch_str) {
-    m <- regmatches(batch_str, regexpr("(?<=B)\\d+", batch_str, perl = TRUE))
-    if (length(m) == 0) return(NA_integer_)
-    as.integer(m)
-  }
-
   sample_id  <- sapply(parsed, `[[`, "name")
   inj_order  <- sapply(parsed, `[[`, "injection_order")
   qc         <- sapply(parsed, function(p) classify_qc(p$name, p$is_mse, p$is_ms2))
-  batch      <- sapply(parsed, function(p) extract_batch(p$batch))
+  batch      <- sapply(parsed, function(p) p$batch)
 
   # Unique sample IDs derived from the filename.
   # Batch prefix ensures QC sample names (e.g. sQC01) are unique across batches.
-  sample_id_unique <- paste0("B", batch, "_", sample_id)
+  sample_id_unique <- paste0(batch, "_", sample_id)
 
   # Global run order: rank samples by (batch, injection_order) to get a single
   # continuous sequence across all batches for drift correction.
