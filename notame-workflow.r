@@ -267,18 +267,22 @@ zero_var <- apply(assay(data), 1, function(x) {
 data <- data[!zero_var, ]
 n_after_zerovar <- nrow(data)
 
-# Pre-imputation QC-RSD filter: remove features with RSD > QC_RSD_FILTER in QC samples
-qc_idx  <- which(colData(data)$QC == "QC")
-qc_mat  <- assay(data)[, qc_idx, drop = FALSE]
-qc_rsd  <- apply(qc_mat, 1, function(x) {
-  x <- x[!is.na(x)]
-  if (length(x) < 2 || mean(x) == 0) return(NA_real_)
-  sd(x) / mean(x)
-})
-n_na_rsd <- sum(is.na(qc_rsd))
-if (n_na_rsd > 0)
-  message(sprintf("QC-RSD filter: %d features had insufficient QC observations to compute RSD — kept by default", n_na_rsd))
-data <- data[is.na(qc_rsd) | qc_rsd <= QC_RSD_FILTER, ]
+# Pre-imputation QC-RSD filter: keep features passing RSD threshold in at least one batch
+cd_pre   <- as.data.frame(colData(data))
+batches  <- unique(cd_pre$Batch)
+rsd_mat  <- do.call(cbind, lapply(batches, function(b) {
+  idx <- which(cd_pre$QC == "QC" & cd_pre$Batch == b)
+  if (length(idx) < 2) return(rep(NA_real_, nrow(data)))
+  apply(assay(data)[, idx, drop = FALSE], 1, function(x) {
+    x <- x[!is.na(x)]
+    if (length(x) < 2 || mean(x) == 0) return(NA_real_)
+    sd(x) / mean(x)
+  })
+}))
+colnames(rsd_mat) <- as.character(batches)
+# Feature passes if RSD <= threshold in at least one batch (NA = insufficient data, counts as pass)
+passes_any <- apply(rsd_mat, 1, function(r) any(is.na(r) | r <= QC_RSD_FILTER))
+data <- data[passes_any, ]
 n_after_qcrsd <- nrow(data)
 
 # Save pre-filtering summary
@@ -289,7 +293,7 @@ filter_log <- data.frame(
                          sprintf("QC detection (>= %.0f%%)", QC_DETECTION_LIMIT * 100),
                          sprintf("Sample detection (>= %.0f%%)", SAMPLE_DETECTION_LIMIT * 100),
                          "Zero variance",
-                         sprintf("Pre-correction QC-RSD filter (<= %.0f%% in QC)", QC_RSD_FILTER * 100)),
+                         sprintf("Pre-correction QC-RSD filter (<= %.0f%% in >= 1 batch)", QC_RSD_FILTER * 100)),
   features_removed   = c(n_before       - n_after_blank,
                          n_after_blank  - n_after_lowint,
                          n_after_lowint - n_after_fill,
