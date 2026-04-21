@@ -325,7 +325,7 @@ add_batch_qc_metrics <- function(se) {
 
   for (b in batches) {
     idx <- which(colData(se)$Batch == b & colData(se)$QC == "QC")
-    col <- paste0("RSD_r_B", b)
+    col <- paste0("RSD_r_", gsub("[^A-Za-z0-9]", "_", as.character(b)))
 
     if (length(idx) < 2) {
       rowData(se)[[col]] <- NA_real_

@@ -380,41 +380,38 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.csv"), row.names = FALSE)
 
 write_annotations <- function(se, annot_df, file) {
-  ids <- rownames(se)
-  rd  <- as.data.frame(rowData(se))
+  tryCatch({
+    ids <- rownames(se)
+    rd  <- as.data.frame(rowData(se), check.names = FALSE)
 
-  name_col <- "Metabolite name"
-  is_annotated <- function(rows) {
-    if (!name_col %in% colnames(rows)) return(rep(FALSE, nrow(rows)))
-    v <- rows[[name_col]]
-    !is.na(v) & nchar(trimws(v)) > 0 & !grepl("^Unknown$", v, ignore.case = TRUE)
-  }
+    name_col <- "Metabolite name"
+    is_annotated <- function(x) !is.na(x) & nchar(trimws(x)) > 0 & !grepl("^Unknown$", x, ignore.case = TRUE)
 
-  out <- lapply(ids, function(id) {
-    row <- annot_df[annot_df$Feature_ID == id, , drop = FALSE]
-    annotation_source <- "Representative feature"
+    # Base lookup via match — preserves row structure, NAs for unmatched
+    out <- annot_df[match(ids, annot_df$Feature_ID), , drop = FALSE]
+    out$Feature_ID        <- ids
+    rownames(out)         <- NULL
+    out$Annotation_source <- "Representative feature"
 
-    # If representative lacks annotation, try cluster members
-    if (nrow(row) == 0 || !is_annotated(row)) {
-      members_raw <- if ("Cluster_features" %in% colnames(rd)) rd[id, "Cluster_features"] else NA
-      if (!is.na(members_raw) && nchar(trimws(members_raw)) > 0) {
+    # For clustered SEs: borrow annotation from cluster member if representative is unannotated
+    if (name_col %in% colnames(out) && "Cluster_features" %in% colnames(rd)) {
+      needs <- which(!is_annotated(out[[name_col]]))
+      for (i in needs) {
+        id          <- ids[i]
+        members_raw <- rd[id, "Cluster_features"]
+        if (is.na(members_raw) || nchar(trimws(as.character(members_raw))) == 0) next
         member_ids  <- trimws(strsplit(as.character(members_raw), ";")[[1]])
         member_rows <- annot_df[annot_df$Feature_ID %in% member_ids, , drop = FALSE]
-        annotated   <- member_rows[is_annotated(member_rows), , drop = FALSE]
-        if (nrow(annotated) > 0) {
-          row <- annotated[1, , drop = FALSE]
-          row$Feature_ID <- id
-          annotation_source <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
-        }
+        annotated   <- member_rows[is_annotated(member_rows[[name_col]]), , drop = FALSE]
+        if (nrow(annotated) == 0) next
+        out[i, colnames(annot_df)] <- annotated[1, ]
+        out$Feature_ID[i]        <- id
+        out$Annotation_source[i] <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
       }
     }
 
-    if (nrow(row) == 0) row <- annot_df[NA_integer_, ]
-    row$Annotation_source <- annotation_source
-    row
-  })
-
-  write.xlsx(do.call(rbind, out), file, colNames = TRUE, rowNames = FALSE)
+    write.xlsx(out, file, colNames = TRUE, rowNames = FALSE)
+  }, error = function(e) message("WARNING: could not write annotations to ", file, ": ", conditionMessage(e)))
 }
 
 for (method in CORRECTION_METHODS) {
@@ -512,7 +509,7 @@ for (method in CORRECTION_METHODS) {
   }, error = function(e) message("WARNING: global RSD filter export failed (", method, "): ", conditionMessage(e)))
 
   # Batchwise RSD filter: features with RSD_r < 0.3 in >= 50% of batches
-  batch_rsd_cols <- grep("^RSD_r_B", colnames(rowData(combined)), value = TRUE)
+  batch_rsd_cols <- grep("^RSD_r_", colnames(rowData(combined)), value = TRUE)
   if (length(batch_rsd_cols) > 0) {
     batch_rsd_mat  <- as.matrix(as.data.frame(rowData(combined))[, batch_rsd_cols, drop = FALSE])
     frac_passing   <- rowMeans(batch_rsd_mat < 0.3, na.rm = TRUE)
