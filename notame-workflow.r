@@ -275,8 +275,8 @@ rsd_mat  <- do.call(cbind, lapply(batches, function(b) {
   if (length(idx) < 2) return(rep(NA_real_, nrow(data)))
   apply(assay(data)[, idx, drop = FALSE], 1, function(x) {
     x <- x[!is.na(x)]
-    if (length(x) < 2 || mean(x) == 0) return(NA_real_)
-    sd(x) / mean(x)
+    if (length(x) < 2 || median(x) == 0) return(NA_real_)
+    sd(x) / median(x)
   })
 }))
 colnames(rsd_mat) <- as.character(batches)
