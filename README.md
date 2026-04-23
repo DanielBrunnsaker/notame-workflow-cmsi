@@ -40,34 +40,33 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
 
 ### RStudio (via renv)
 
-Dependencies are managed with `renv`. To restore the environment:
+**Setup**
 
-1. Open the project in RStudio (`notame-workflow-cmsi.Rproj` or just open the folder)
-2. Install renv if not already available:
+1. Double-click `notame-workflow-cmsi.Rproj` to open the project in RStudio.
+2. RStudio may prompt you to install `renv` — accept, or run this yourself in the Console:
    ```r
    install.packages("renv")
    ```
-3. Restore the package library:
+3. Restore all required packages (this may take a few minutes the first time):
    ```r
    renv::restore()
    ```
-4. Set parameters as environment variables and source the script:
+
+**Running the pipeline**
+
+4. In the RStudio Console, fill in your paths and settings and run:
    ```r
    Sys.setenv(
-     IN_XLSX          = "C:/path/to/msdial_export.xlsx",
-     PROJECT_FOLDER   = "C:/path/to/output",
-     COLUMN           = "RP",
-     POLARITY         = "POS",
-     CORRECTION_METHODS = "pmp_qcrsc,notame"
+     IN_XLSX          = "C:/path/to/msdial_export.xlsx",  # your MSDIAL alignment export
+     PROJECT_FOLDER   = "C:/path/to/output",              # where results will be saved
+     COLUMN           = "RP",                             # chromatographic column (e.g. RP, HILIC)
+     POLARITY         = "POS",                            # ionisation polarity: POS or NEG
+     CORRECTION_METHODS = "pmp_qcrsc,notame"              # see Correction methods table below
    )
    source("notame-workflow.r")
    ```
-   Or set them in your `.Renviron` file for persistence across sessions.
 
-5. Alternatively, run from the terminal:
-   ```bash
-   IN_XLSX=... PROJECT_FOLDER=... COLUMN=RP POLARITY=POS Rscript notame-workflow.r
-   ```
+   Results will appear in `PROJECT_FOLDER` under a subfolder named `{COLUMN}_{POLARITY}` (e.g. `RP_POS`).
 
 ### Help
 
