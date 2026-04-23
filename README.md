@@ -11,7 +11,8 @@ Built around the [notame](https://github.com/antonvsdata/notame) R package.
 3. **Drift and batch correction** — one or more correction methods run in parallel, each saved to its own output folder
 4. **Imputation** — random forest imputation of remaining missing values
 5. **QC metrics and comparison** — per-method quality metrics computed and compared in a summary table
-6. **Output** — feature tables, MSDIAL annotations, and QC plots per method
+6. **Feature clustering** — correlated features (e.g. isotopes, adducts) are grouped and compressed to one representative per cluster using notame's `cluster_features` / `compress_clusters`. Both the full unclustered and clustered outputs are retained.
+7. **Output** — feature tables, MSDIAL annotations, and QC plots per method
 
 ## Requirements
 
@@ -117,14 +118,17 @@ output/
     pre_correction/
       QC_plots/
     {method}/
-      feature_table.xlsx            # clustered features
-      feature_table_full.xlsx       # all features (unclustered)
-      annotations.xlsx              # MSDIAL annotations for clustered features
-      annotations_full.xlsx         # MSDIAL annotations for all features
-      feature_info.xlsx             # feature metadata with QC metrics
-      feature_table_rsd30.xlsx      # QC RSD < 30% filter applied
+      feature_table_full.xlsx       # all features, unclustered
+      feature_info_full.xlsx        # feature metadata with QC metrics, unclustered
+      annotations_full.xlsx         # MSDIAL annotations, unclustered
+      feature_table.xlsx            # one representative per cluster
+      feature_info.xlsx
+      annotations.xlsx              # annotations with cluster-member fallback
+      feature_table_full_rsd30.xlsx # above, with QC RSD < 30% filter applied
+      feature_table_rsd30.xlsx
       annotations_rsd30.xlsx
-      feature_table_batchrsd30.xlsx # QC RSD < 30% in >= 50% of batches
+      feature_table_full_batchrsd30.xlsx  # above, with per-batch QC RSD < 30% in >= 50% of batches
+      feature_table_batchrsd30.xlsx
       annotations_batchrsd30.xlsx
       QC_plots/
 intermediates/
