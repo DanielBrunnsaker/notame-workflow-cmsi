@@ -65,7 +65,7 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
    )
    source("notame-workflow.r")
    ```
-
+   Other parameters can and should be used to adapt your processing. See Key parameters below. 
    Results will appear in `PROJECT_FOLDER` under a subfolder named `{COLUMN}_{POLARITY}` (e.g. `RP_POS`).
 
 ### Help
