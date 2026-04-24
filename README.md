@@ -88,8 +88,8 @@ Rscript notame-workflow.r --help
 | `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD; feature must pass in ≥ 1 batch. Set to e.g. `0.80` to enable |
 | `LOW_INT_FILTER_FRAC` | No | `0.10` | Low-intensity cutoff as fraction of mean p80 intensity |
-| `BLANK_RATIO` | No | `1` | Blank filter ratio; set to `none` to disable |
-| `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`) |
+| `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(Blank). Set to e.g. `1` to enable |
+| `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
 
@@ -105,6 +105,12 @@ Rscript notame-workflow.r --help
 | `combat_only` | ComBat batch correction only (no drift correction). |
 | `loess_combat` | Per-batch LOESS drift correction followed by ComBat batch correction. |
 | `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
+
+## Normalisation
+
+PQN (Probabilistic Quotient Normalisation) can be applied after drift/batch correction by setting `NORMALIZATION=pqn`. It scales each sample by the median ratio of its intensities to a reference spectrum. The reference is the median spectrum of pooled QC samples when QC samples are present, or the median of all biological samples otherwise.
+
+PQN (hopefully) corrects for differences in overall sample concentration or dilution, and is applied independently within each correction method branch.
 
 ## Output structure
 
