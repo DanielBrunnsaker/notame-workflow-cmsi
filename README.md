@@ -1,6 +1,6 @@
 # notame-workflow-cmsi
 
-Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics data. Converts MSDIAL alignment exports to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel.
+Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics data. Converts MSDIAL alignment exports to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel. Main differences with notame is the conceptual alignment with approaches used at the Chalmers Mass Spectrometry Infrastructure, and additionally the inclusion correction method evaluation.
 
 Built around the [notame](https://github.com/antonvsdata/notame) R package.
 
