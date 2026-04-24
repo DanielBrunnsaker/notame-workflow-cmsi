@@ -81,13 +81,15 @@ correct_combat_only <- function(data) {
   combined <- imp$data
   obs_mask <- imp$mask
 
+  pre <- combined
+
   message("==> Batch correction (ComBat only, no drift correction)")
   assay(combined, 1, withDimnames = FALSE) <- ComBat(
     dat   = assay(combined, 1),
     batch = as.factor(colData(combined)$Batch)
   )
 
-  list(pre = combined, post = combined, obs_mask = obs_mask)
+  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 
@@ -120,7 +122,6 @@ correct_pmp_qcrsc <- function(data) {
 correct_batchcorr <- function(data,
                               G          = seq(5, 35, by = 10),
                               modelNames = c("VVV", "VVE", "VEV", "VEE", "VEI", "VVI", "VII"),
-                              CVlimit    = 0.3,
                               qualRatio  = 0.4) {
   library(batchCorr)
 
@@ -168,8 +169,18 @@ correct_batchcorr <- function(data,
 
   if (length(batch_corrObjs) == 0) stop("correctDrift failed for all batches")
 
-  message("==> Merging batches")
-  merged <- mergeBatches(batch_corrObjs, qualRatio = qualRatio)
+  if (length(batch_corrObjs) == 1) {
+    message("==> Single batch detected — skipping mergeBatches, using corrected batch directly")
+    b       <- names(batch_corrObjs)[1]
+    bc      <- batch_corrObjs[[b]]
+    merged  <- list(
+      peakTableCorr = bc$peakTable,
+      peakTableOrg  = mat[which(as.character(meta$Batch) == b)[order(meta[which(as.character(meta$Batch) == b), "Injection_order"])], , drop = FALSE]
+    )
+  } else {
+    message("==> Merging batches")
+    merged <- mergeBatches(batch_corrObjs, qualRatio = qualRatio)
+  }
 
   # Reconstruct SE from merged matrices (samples × features → features × samples)
   kept_features <- colnames(merged$peakTableCorr)
@@ -186,7 +197,7 @@ correct_batchcorr <- function(data,
     sampleGroup   = sgrp_merged,
     refGroup      = "QC",
     population    = "all",
-    CVlimit       = CVlimit
+    CVlimit       = Inf
   )
 
   combined <- pre
