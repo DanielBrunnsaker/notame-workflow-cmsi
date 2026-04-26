@@ -80,6 +80,11 @@ Environment variables (all optional, hardcoded defaults shown):
   LOW_INT_PERCENTILE    Percentile used for the low-intensity filter (0-1).
                         Default: 0.8
 
+  MIN_QC_SAMPLE_DETECTION  Minimum fraction of features that must be detected in a QC sample
+                        for it to be used as a QC reference. QC samples below this threshold
+                        are removed before processing (empty injections, failed runs).
+                        Default: 0.50
+
   QC_RSD_FILTER         Pre-correction QC-RSD threshold. Features with QC CV above this
                         value in all batches are removed (pass = acceptable in >= 1 batch).
                         Set to 'none' to disable.
@@ -147,7 +152,8 @@ LOW_INT_FILTER_FRAC <- as.numeric(get_env("LOW_INT_FILTER_FRAC", "0.10"))
 LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
 FILL_FILTER         <- as.numeric(get_env("FILL_FILTER",         "0.10"))
 qc_rsd_env    <- Sys.getenv("QC_RSD_FILTER", unset = "")
-QC_RSD_FILTER <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
+QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
+MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods:
@@ -251,7 +257,25 @@ if (!is.na(BLANK_RATIO)) {
 n_after_blank <- nrow(data)
 
 # Remove non-analytical sample types; retain ltQC for downstream evaluation
-data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST")]
+data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST", "MatrixBlank")]
+
+# Remove QC samples with insufficient feature detection (empty injections, failed runs)
+{
+  qc_cols    <- which(colData(data)$QC == "QC")
+  mat_qc     <- assay(data)[, qc_cols, drop = FALSE]
+  detect_qc  <- colMeans(mat_qc > 0 & !is.na(mat_qc))
+  bad_qc     <- qc_cols[detect_qc < MIN_QC_SAMPLE_DETECTION]
+  if (length(bad_qc) > 0) {
+    bad_names  <- colData(data)$Sample_ID[bad_qc]
+    bad_batch  <- colData(data)$Batch[bad_qc]
+    message("==> Removing ", length(bad_qc), " QC sample(s) with detection rate < ",
+            round(MIN_QC_SAMPLE_DETECTION * 100), "%:")
+    for (k in seq_along(bad_names))
+      message("    ", bad_names[k], " (batch: ", bad_batch[k], ", detection: ",
+              round(detect_qc[detect_qc < MIN_QC_SAMPLE_DETECTION][k] * 100, 1), "%)")
+    data <- data[, -bad_qc]
+  }
+}
 
 # Low-intensity filter: remove features below a fraction of the mean pN intensity
 {
@@ -370,6 +394,7 @@ writeLines(c(
   paste("LOW_INT_PERCENTILE:     ", LOW_INT_PERCENTILE),
   paste("LOW_INT_CUTOFF:         ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
   paste("FILL_FILTER:            ", FILL_FILTER),
+  paste("MIN_QC_SAMPLE_DETECTION: ", MIN_QC_SAMPLE_DETECTION),
   paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
   paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
   paste("RUV_K:                  ", RUV_K),

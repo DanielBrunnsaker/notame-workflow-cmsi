@@ -86,6 +86,7 @@ Rscript notame-workflow.r --help
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
 | `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
+| `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC sample for it to be used as a QC reference. QC samples below this threshold are removed before processing |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD; feature must pass in ≥ 1 batch. Set to e.g. `0.80` to enable |
 | `RSD_THRESHOLD` | No | `0.30` | RSD threshold for post-correction output filtering. Controls both global (`_rsdXX`) and per-batch (`_batchrsdXX`) filtered outputs |
 | `LOW_INT_FILTER_FRAC` | No | `0.10` | Low-intensity cutoff as fraction of mean p80 intensity |
