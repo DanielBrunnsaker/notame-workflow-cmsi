@@ -94,7 +94,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     if (grepl("ltQC",       name, ignore.case = TRUE))  return("ltQC")
     if (grepl("sQC",        name, ignore.case = TRUE))  return("QC")
     if (grepl("MeOH",       name, ignore.case = TRUE))  return("Wash")
-    if (grepl("blank",      name, ignore.case = TRUE))  return("Blank")
+    if (grepl("SolvBlank",  name, ignore.case = TRUE))  return("Blank")
+    if (grepl("blank",      name, ignore.case = TRUE))  return("MatrixBlank")
     if (grepl("CondPlasma", name, ignore.case = TRUE))  return("Cond")
     "Sample"
   }
