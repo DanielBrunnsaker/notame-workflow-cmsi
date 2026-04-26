@@ -89,9 +89,10 @@ loess_correct_batch <- function(se_b, span = 0.75, fallback_to_samples = FALSE) 
   }
 
   n_qc_corrected <- n_feat - n_skipped_qc - n_skipped_err - n_fallback
+  skip_reason <- if (fallback_to_samples) "insufficient observations in QC and samples" else "insufficient QC observations"
   message("  Batch ", batch, ": drift-corrected ", n_qc_corrected + n_fallback, "/", n_feat, " features",
           if (n_fallback    > 0) paste0(" | ", n_fallback,    " via sample fallback (insufficient QC)") else "",
-          if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (insufficient QC observations)") else "",
+          if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (", skip_reason, ")") else "",
           if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (LOESS fit error)") else "")
 
   if (n_fallback > 0)
