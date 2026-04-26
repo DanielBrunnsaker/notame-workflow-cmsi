@@ -85,6 +85,10 @@ Environment variables (all optional, hardcoded defaults shown):
                         Set to 'none' to disable.
                         Default: none (disabled)
 
+  RSD_THRESHOLD         RSD threshold used for post-correction output filtering.
+                        Controls both the global (_rsdXX) and per-batch (_batchrsdXX) outputs.
+                        Default: 0.30
+
   RUV_K                 Number of unwanted variation factors for RUV (notame method only).
                         Default: 3
 
@@ -139,6 +143,7 @@ LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
 FILL_FILTER         <- as.numeric(get_env("FILL_FILTER",         "0.10"))
 qc_rsd_env    <- Sys.getenv("QC_RSD_FILTER", unset = "")
 QC_RSD_FILTER <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
+RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods:
 #   "none"         — imputation only (no correction; baseline)
@@ -303,7 +308,7 @@ if (!is.na(QC_RSD_FILTER)) {
     apply(assay(data)[, idx, drop = FALSE], 1, function(x) {
       x <- x[!is.na(x)]
       if (length(x) < 2 || median(x) == 0) return(NA_real_)
-      sd(x) / median(x)
+      mad(x) / median(x)
     })
   }))
   colnames(rsd_mat) <- as.character(batches)
@@ -360,6 +365,7 @@ writeLines(c(
   paste("LOW_INT_CUTOFF:         ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
   paste("FILL_FILTER:            ", FILL_FILTER),
   paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
+  paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
   paste("RUV_K:                  ", RUV_K),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
@@ -493,19 +499,20 @@ for (method in CORRECTION_METHODS) {
   # Full feature set
   write_outputs(combined, "")
 
-  # Global QC-RSD < 30% filter
+  # Global QC-RSD filter
+  rsd_suffix <- paste0("_rsd", round(RSD_THRESHOLD * 100))
   tryCatch({
-    global_keep <- !is.na(rowData(combined)$RSD_r) & rowData(combined)$RSD_r < 0.3
-    write_outputs(combined[global_keep, ], "_rsd30")
+    global_keep <- !is.na(rowData(combined)$RSD_r) & rowData(combined)$RSD_r < RSD_THRESHOLD
+    write_outputs(combined[global_keep, ], rsd_suffix)
   }, error = function(e) message("WARNING: global RSD filter export failed (", method, "): ", conditionMessage(e)))
 
-  # Batchwise QC-RSD < 30% filter (pass in >= 50% of batches)
+  # Batchwise QC-RSD filter (pass in >= 50% of batches)
   batch_rsd_cols <- grep("^RSD_r_", colnames(rowData(combined)), value = TRUE)
   if (length(batch_rsd_cols) > 0) {
     tryCatch({
       batch_rsd_mat <- as.matrix(as.data.frame(rowData(combined))[, batch_rsd_cols, drop = FALSE])
-      frac_passing  <- rowMeans(batch_rsd_mat < 0.3, na.rm = TRUE)
-      write_outputs(combined[!is.na(frac_passing) & frac_passing >= 0.5, ], "_batchrsd30")
+      frac_passing  <- rowMeans(batch_rsd_mat < RSD_THRESHOLD, na.rm = TRUE)
+      write_outputs(combined[!is.na(frac_passing) & frac_passing >= 0.5, ], paste0("_batchrsd", round(RSD_THRESHOLD * 100)))
     }, error = function(e) message("WARNING: batchwise RSD filter export failed (", method, "): ", conditionMessage(e)))
   }
 }

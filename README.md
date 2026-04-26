@@ -87,6 +87,7 @@ Rscript notame-workflow.r --help
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
 | `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD; feature must pass in ≥ 1 batch. Set to e.g. `0.80` to enable |
+| `RSD_THRESHOLD` | No | `0.30` | RSD threshold for post-correction output filtering. Controls both global (`_rsdXX`) and per-batch (`_batchrsdXX`) filtered outputs |
 | `LOW_INT_FILTER_FRAC` | No | `0.10` | Low-intensity cutoff as fraction of mean p80 intensity |
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(Blank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
