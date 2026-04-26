@@ -30,19 +30,26 @@ loess_correct_batch <- function(se_b, span = 0.75) {
   cd     <- colData(se_b)
   qc_idx <- which(cd$QC == "QC")
   inj    <- as.numeric(cd$Injection_order)
+  batch  <- unique(cd$Batch)
+  n_feat <- nrow(mat)
+
+  message("  Batch ", batch, ": ", length(qc_idx), " QC sample(s), ", n_feat, " features")
 
   if (any(!is.finite(inj))) {
     bad <- which(!is.finite(inj))
-    stop("Non-finite Injection_order in batch ", unique(cd$Batch),
+    stop("Non-finite Injection_order in batch ", batch,
          ": samples ", paste(cd$Sample_ID[bad], collapse = ", "),
          " (values: ", paste(inj[bad], collapse = ", "), ")")
   }
+
+  n_skipped_qc  <- 0L
+  n_skipped_err <- 0L
 
   for (i in seq_len(nrow(mat))) {
     y_qc <- as.numeric(mat[i, qc_idx])
     x_qc <- inj[qc_idx]
     ok   <- is.finite(y_qc)
-    if (sum(ok) < 4) next
+    if (sum(ok) < 4) { n_skipped_qc <- n_skipped_qc + 1L; next }
 
     tryCatch({
       fit          <- loess(y ~ x, data = data.frame(x = x_qc[ok], y = y_qc[ok]), span = span)
@@ -53,8 +60,13 @@ loess_correct_batch <- function(se_b, span = 0.75) {
       ratio        <- pred / med_qc
       ratio[is.na(ratio) | ratio <= 0] <- 1
       mat[i, ]     <- mat[i, ] / ratio
-    }, error = function(e) NULL)
+    }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
   }
+
+  n_corrected <- n_feat - n_skipped_qc - n_skipped_err
+  message("  Batch ", batch, ": drift-corrected ", n_corrected, "/", n_feat, " features",
+          if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (insufficient QC observations)") else "",
+          if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (LOESS fit error)") else "")
 
   assay(se_b, 1, withDimnames = FALSE) <- mat
   se_b
