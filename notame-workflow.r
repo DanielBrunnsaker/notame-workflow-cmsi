@@ -259,24 +259,6 @@ n_after_blank <- nrow(data)
 # Remove non-analytical sample types; retain ltQC for downstream evaluation
 data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "SST", "MatrixBlank")]
 
-# Remove QC samples with insufficient feature detection (empty injections, failed runs)
-{
-  qc_cols    <- which(colData(data)$QC == "QC")
-  mat_qc     <- assay(data)[, qc_cols, drop = FALSE]
-  detect_qc  <- colMeans(mat_qc > 0 & !is.na(mat_qc))
-  bad_qc     <- qc_cols[detect_qc < MIN_QC_SAMPLE_DETECTION]
-  if (length(bad_qc) > 0) {
-    bad_names  <- colData(data)$Sample_ID[bad_qc]
-    bad_batch  <- colData(data)$Batch[bad_qc]
-    message("==> Removing ", length(bad_qc), " QC sample(s) with detection rate < ",
-            round(MIN_QC_SAMPLE_DETECTION * 100), "%:")
-    for (k in seq_along(bad_names))
-      message("    ", bad_names[k], " (batch: ", bad_batch[k], ", detection: ",
-              round(detect_qc[detect_qc < MIN_QC_SAMPLE_DETECTION][k] * 100, 1), "%)")
-    data <- data[, -bad_qc]
-  }
-}
-
 # Low-intensity filter: remove features below a fraction of the mean pN intensity
 {
   mat_int      <- assay(data); mat_int[is.na(mat_int)] <- 0
@@ -307,6 +289,25 @@ if (all(is.na(fill_pct))) {
 } else {
   data <- data[is.na(fill_pct) | fill_pct >= FILL_FILTER, ]
   n_after_fill <- nrow(data)
+}
+
+# Remove QC samples with insufficient feature detection (empty injections, failed runs)
+# Runs after feature filters so detection rate is assessed on meaningful features only
+{
+  qc_cols   <- which(colData(data)$QC == "QC")
+  mat_qc    <- assay(data)[, qc_cols, drop = FALSE]
+  detect_qc <- colMeans(mat_qc > 0 & !is.na(mat_qc))
+  bad_qc    <- qc_cols[detect_qc < MIN_QC_SAMPLE_DETECTION]
+  if (length(bad_qc) > 0) {
+    bad_names <- colData(data)$Sample_ID[bad_qc]
+    bad_batch <- colData(data)$Batch[bad_qc]
+    message("==> Removing ", length(bad_qc), " QC sample(s) with detection rate < ",
+            round(MIN_QC_SAMPLE_DETECTION * 100), "%:")
+    for (k in seq_along(bad_names))
+      message("    ", bad_names[k], " (batch: ", bad_batch[k], ", detection: ",
+              round(detect_qc[detect_qc < MIN_QC_SAMPLE_DETECTION][k] * 100, 1), "%)")
+    data <- data[, -bad_qc]
+  }
 }
 
 # QC detection filter
