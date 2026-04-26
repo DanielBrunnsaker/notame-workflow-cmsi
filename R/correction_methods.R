@@ -73,6 +73,38 @@ correct_loess_combat <- function(data, loess_span) {
 
 
 
+correct_loess_limma <- function(data, loess_span) {
+  library(limma)
+
+  message("==> Drift correction (LOESS)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch(se_b, span = loess_span)
+    }),
+    merge = "samples"
+  )
+
+  message("==> Imputation")
+  imp      <- impute_with_mask(combined, parallelize = "variables")
+  combined <- imp$data
+  obs_mask <- imp$mask
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Between-batch correction (limma removeBatchEffect)")
+    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
+      x     = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+  }
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+
 correct_combat_only <- function(data) {
   library(sva)
 

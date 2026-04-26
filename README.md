@@ -104,6 +104,7 @@ Rscript notame-workflow.r --help
 | `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). |
 | `combat_only` | ComBat batch correction only (no drift correction). |
 | `loess_combat` | Per-batch LOESS drift correction followed by ComBat batch correction. |
+| `loess_limma`  | Per-batch LOESS drift correction followed by `limma::removeBatchEffect()` for between-batch correction. Linear model alternative to ComBat. |
 | `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
 
 ## Normalisation

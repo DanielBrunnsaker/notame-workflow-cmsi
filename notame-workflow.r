@@ -53,7 +53,7 @@ Environment variables (all optional, hardcoded defaults shown):
                         Each method is saved to its own output subfolder.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | serrf |
-                                 batchcorr | combat_only | loess_combat | waveica
+                                 batchcorr | combat_only | loess_combat | loess_limma | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -430,8 +430,9 @@ for (method in CORRECTION_METHODS) {
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
       loess_combat = correct_loess_combat(data, LOESS_SPAN),
+      loess_limma  = correct_loess_limma(data, LOESS_SPAN),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
