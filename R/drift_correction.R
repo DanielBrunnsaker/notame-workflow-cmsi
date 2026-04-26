@@ -25,7 +25,7 @@ process_batch <- function(se_b) {
 # Fits a LOESS curve through QC samples (injection order vs feature abundance),
 # then divides all samples by the predicted value normalised to QC median.
 # Requires >= 4 finite QC observations per feature to fit reliably.
-loess_correct_batch <- function(se_b, span = 0.75) {
+loess_correct_batch <- function(se_b, span = 0.75, fallback_to_samples = FALSE) {
   mat    <- assay(se_b, 1)
   cd     <- colData(se_b)
   qc_idx <- which(cd$QC == "QC")
@@ -44,12 +44,37 @@ loess_correct_batch <- function(se_b, span = 0.75) {
 
   n_skipped_qc  <- 0L
   n_skipped_err <- 0L
+  n_fallback    <- 0L
+
+  samp_idx <- which(cd$QC == "Sample")
 
   for (i in seq_len(nrow(mat))) {
     y_qc <- as.numeric(mat[i, qc_idx])
     x_qc <- inj[qc_idx]
     ok   <- is.finite(y_qc)
-    if (sum(ok) < 4) { n_skipped_qc <- n_skipped_qc + 1L; next }
+
+    if (sum(ok) < 4) {
+      if (!fallback_to_samples) { n_skipped_qc <- n_skipped_qc + 1L; next }
+
+      # Fallback: fit LOESS through all samples instead of QC only
+      y_all <- as.numeric(mat[i, samp_idx])
+      x_all <- inj[samp_idx]
+      ok_all <- is.finite(y_all)
+      if (sum(ok_all) < 4) { n_skipped_qc <- n_skipped_qc + 1L; next }
+
+      tryCatch({
+        fit          <- loess(y ~ x, data = data.frame(x = x_all[ok_all], y = y_all[ok_all]), span = span)
+        ok_inj       <- !is.na(inj)
+        pred         <- rep(NA_real_, length(inj))
+        pred[ok_inj] <- predict(fit, newdata = data.frame(x = inj[ok_inj]))
+        med_all      <- median(y_all[ok_all])
+        ratio        <- pred / med_all
+        ratio[is.na(ratio) | ratio <= 0] <- 1
+        mat[i, ]     <- mat[i, ] / ratio
+        n_fallback   <- n_fallback + 1L
+      }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
+      next
+    }
 
     tryCatch({
       fit          <- loess(y ~ x, data = data.frame(x = x_qc[ok], y = y_qc[ok]), span = span)
@@ -63,10 +88,15 @@ loess_correct_batch <- function(se_b, span = 0.75) {
     }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
   }
 
-  n_corrected <- n_feat - n_skipped_qc - n_skipped_err
-  message("  Batch ", batch, ": drift-corrected ", n_corrected, "/", n_feat, " features",
+  n_qc_corrected <- n_feat - n_skipped_qc - n_skipped_err - n_fallback
+  message("  Batch ", batch, ": drift-corrected ", n_qc_corrected + n_fallback, "/", n_feat, " features",
+          if (n_fallback    > 0) paste0(" | ", n_fallback,    " via sample fallback (insufficient QC)") else "",
           if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (insufficient QC observations)") else "",
           if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (LOESS fit error)") else "")
+
+  if (n_fallback > 0)
+    message("  WARNING: Batch ", batch, " used sample-based LOESS fallback for ", n_fallback,
+            " features. Only valid if injection order is randomised.")
 
   assay(se_b, 1, withDimnames = FALSE) <- mat
   se_b

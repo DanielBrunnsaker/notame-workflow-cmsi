@@ -44,14 +44,13 @@ correct_notame <- function(data, ruv_k) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_combat <- function(data, loess_span) {
+correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(sva)
 
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      message("  Batch ", unique(colData(se_b)$Batch))
-      loess_correct_batch(se_b, span = loess_span)
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
     }),
     merge = "samples"
   )
@@ -73,13 +72,13 @@ correct_loess_combat <- function(data, loess_span) {
 
 
 
-correct_loess_limma <- function(data, loess_span) {
+correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(limma)
 
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
     }),
     merge = "samples"
   )

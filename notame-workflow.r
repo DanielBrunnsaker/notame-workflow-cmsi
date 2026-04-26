@@ -95,6 +95,11 @@ Environment variables (all optional, hardcoded defaults shown):
   LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat only).
                         Default: 0.75
 
+  LOESS_FALLBACK_TO_SAMPLES  If TRUE, fall back to fitting LOESS through all samples when a
+                        batch has fewer than 4 finite QC observations. Only appropriate when
+                        samples are in randomised injection order.
+                        Default: FALSE
+
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
                         Default: none
@@ -157,7 +162,8 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
-LOESS_SPAN <- as.numeric(get_env("LOESS_SPAN",  "0.75"))
+LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
+LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 
@@ -368,6 +374,7 @@ writeLines(c(
   paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
   paste("RUV_K:                  ", RUV_K),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
+  paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
 ), file.path(interdir, "run_parameters.txt"))
 
@@ -435,8 +442,8 @@ for (method in CORRECTION_METHODS) {
       serrf        = correct_serrf(data),
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
-      loess_combat = correct_loess_combat(data, LOESS_SPAN),
-      loess_limma  = correct_loess_limma(data, LOESS_SPAN),
+      loess_combat = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_limma  = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       waveica      = correct_waveica(data),
       stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, waveica")
     )
