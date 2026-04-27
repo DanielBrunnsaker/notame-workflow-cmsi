@@ -98,13 +98,12 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, 
 
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
+  pre      <- combined
 
   if (log_transform) {
-    message("==> Log2 transformation")
+    message("==> Log2 transformation (temporary, for ComBat)")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
   }
-
-  pre <- combined
 
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
@@ -115,6 +114,11 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, 
       dat   = assay(combined, 1),
       batch = as.factor(colData(combined)$Batch)
     )
+  }
+
+  if (log_transform) {
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
   }
 
   message("==> Imputation (RF on corrected data)")
@@ -140,13 +144,12 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, l
 
   # LoD/2 fill before limma which requires a complete matrix
   combined <- lod2_impute(combined)
+  pre      <- combined
 
   if (log_transform) {
-    message("==> Log2 transformation")
+    message("==> Log2 transformation (temporary, for limma)")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
   }
-
-  pre <- combined
 
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
@@ -157,6 +160,11 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, l
       x     = assay(combined, 1),
       batch = as.factor(colData(combined)$Batch)
     )
+  }
+
+  if (log_transform) {
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
   }
 
   message("==> Imputation (RF on corrected data)")
@@ -170,19 +178,23 @@ correct_combat_only <- function(data, log_transform = TRUE) {
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)
+  pre      <- data
 
   if (log_transform) {
-    message("==> Log2 transformation")
+    message("==> Log2 transformation (temporary, for ComBat)")
     assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
   }
-
-  pre <- data
 
   message("==> Batch correction (ComBat only, no drift correction)")
   assay(data, 1, withDimnames = FALSE) <- ComBat(
     dat   = assay(data, 1),
     batch = as.factor(colData(data)$Batch)
   )
+
+  if (log_transform) {
+    message("==> Back-transforming to raw scale")
+    assay(data, 1, withDimnames = FALSE) <- 2^assay(data, 1)
+  }
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(data, obs_mask)
