@@ -53,7 +53,7 @@ Environment variables (required variables are marked; all others are optional wi
                         Each method is saved to its own output subfolder.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | serrf |
-                                 batchcorr | combat_only | loess_combat | loess_limma | loess_median | waveica
+                                 batchcorr | combat_only | loess_combat | loess_limma | loess_feature_median | loess_global_median | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -97,7 +97,7 @@ Environment variables (required variables are marked; all others are optional wi
   RUV_K                 Number of unwanted variation factors for RUV (notame method only).
                         Default: 3
 
-  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_median).
+  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_feature_median, loess_global_median).
                         Higher = smoother, more conservative correction.
                         Default: 0.75
 
@@ -473,9 +473,10 @@ for (method in CORRECTION_METHODS) {
       combat_only  = correct_combat_only(data),
       loess_combat  = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_median  = correct_loess_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_global_median  = correct_loess_global_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_median, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_feature_median, loess_global_median, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))

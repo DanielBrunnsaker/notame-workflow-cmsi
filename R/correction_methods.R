@@ -116,7 +116,7 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_feature_median <- function(data, loess_span, fallback_to_samples = FALSE) {
 
   # LOESS handles NAs natively — no LoD/2 needed before this step
   message("==> Drift correction (LOESS)")
@@ -127,7 +127,6 @@ correct_loess_median <- function(data, loess_span, fallback_to_samples = FALSE) 
     merge = "samples"
   )
 
-  # Capture obs_mask after merge so column order matches combined
   obs_mask <- !is.na(assay(combined, 1))
   pre      <- combined
 
@@ -136,7 +135,35 @@ correct_loess_median <- function(data, loess_span, fallback_to_samples = FALSE) 
     message("==> Batch correction skipped (only one batch detected)")
   } else {
     message("==> Between-batch correction (per-feature median ratio normalisation)")
-    combined <- batch_median_correct(combined)
+    combined <- batch_feature_median_correct(combined)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+correct_loess_global_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+
+  # LOESS handles NAs natively — no LoD/2 needed before this step
+  message("==> Drift correction (LOESS)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+    }),
+    merge = "samples"
+  )
+
+  obs_mask <- !is.na(assay(combined, 1))
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Between-batch correction (global median ratio normalisation)")
+    combined <- batch_global_median_correct(combined)
   }
 
   message("==> Imputation (RF on corrected data)")
@@ -146,11 +173,9 @@ correct_loess_median <- function(data, loess_span, fallback_to_samples = FALSE) 
 }
 
 # Per-feature batch median ratio correction.
-# For each feature, scales each batch so its biological sample median matches
-# the grand median across all batches. QC-independent — works without QC samples.
-# Falls back to no correction (scale = 1) for features or batches with fewer
-# than 2 finite positive observations.
-batch_median_correct <- function(se) {
+# Scales each batch so its biological sample median per feature matches the
+# grand median. More flexible than global scaling but noisier for sparse features.
+batch_feature_median_correct <- function(se) {
   mat      <- assay(se, 1)
   cd       <- as.data.frame(colData(se))
   samp_idx <- which(cd$QC == "Sample")
@@ -166,21 +191,65 @@ batch_median_correct <- function(se) {
     b_samp_idx <- intersect(b_idx, samp_idx)
 
     if (length(b_samp_idx) < 2) {
-      message("  Batch ", b, ": skipped (insufficient samples for median correction)")
+      message("  Batch ", b, ": skipped (insufficient samples)")
       next
     }
 
-    batch_med <- apply(mat[, b_samp_idx, drop = FALSE], 1, function(x) {
+    batch_med    <- apply(mat[, b_samp_idx, drop = FALSE], 1, function(x) {
       ok <- is.finite(x) & x > 0
       if (sum(ok) < 2) NA_real_ else median(x[ok])
     })
-
     scale_factor <- grand_med / batch_med
     scale_factor[!is.finite(scale_factor) | scale_factor <= 0] <- 1
 
     mat[, b_idx] <- mat[, b_idx] * scale_factor
     message("  Batch ", b, ": scaled ", sum(is.finite(scale_factor) & scale_factor != 1),
             "/", nrow(mat), " features")
+  }
+
+  assay(se, 1, withDimnames = FALSE) <- mat
+  se
+}
+
+# Global batch median ratio correction.
+# Computes one scaling factor per batch from the median of all biological sample
+# intensities, then applies it uniformly to all features. Assumes a constant
+# multiplicative offset across all features within a batch.
+batch_global_median_correct <- function(se) {
+  mat      <- assay(se, 1)
+  cd       <- as.data.frame(colData(se))
+  samp_idx <- which(cd$QC == "Sample")
+  batches  <- unique(as.character(cd$Batch))
+
+  all_samp_vals <- mat[, samp_idx, drop = FALSE]
+  grand_med     <- median(all_samp_vals[is.finite(all_samp_vals) & all_samp_vals > 0],
+                          na.rm = TRUE)
+
+  if (!is.finite(grand_med) || grand_med <= 0) {
+    message("  WARNING: could not compute grand median — skipping global batch correction")
+    return(se)
+  }
+
+  for (b in batches) {
+    b_idx      <- which(as.character(cd$Batch) == b)
+    b_samp_idx <- intersect(b_idx, samp_idx)
+
+    if (length(b_samp_idx) < 2) {
+      message("  Batch ", b, ": skipped (insufficient samples)")
+      next
+    }
+
+    b_vals    <- mat[, b_samp_idx, drop = FALSE]
+    batch_med <- median(b_vals[is.finite(b_vals) & b_vals > 0], na.rm = TRUE)
+
+    if (!is.finite(batch_med) || batch_med <= 0) {
+      message("  Batch ", b, ": skipped (could not compute batch median)")
+      next
+    }
+
+    scale_factor <- grand_med / batch_med
+    mat[, b_idx] <- mat[, b_idx] * scale_factor
+    message("  Batch ", b, ": scale factor = ", round(scale_factor, 4))
   }
 
   assay(se, 1, withDimnames = FALSE) <- mat

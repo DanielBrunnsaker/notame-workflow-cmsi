@@ -94,7 +94,7 @@ Rscript notame-workflow.r --help
 | `LOW_INT_PERCENTILE` | No | `0.80` | Percentile used for the low-intensity filter |
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
-| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat`, `loess_limma`, `loess_median`). Higher = smoother, more conservative |
+| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat`, `loess_limma`, `loess_feature_median`, `loess_global_median`). Higher = smoother, more conservative |
 | `LOESS_FALLBACK_TO_SAMPLES` | No | `FALSE` | If `TRUE`, fall back to fitting LOESS through biological samples when a batch has insufficient QC observations. Only valid when samples are in randomised injection order |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
@@ -111,7 +111,8 @@ Rscript notame-workflow.r --help
 | `combat_only` | ComBat batch correction only (no drift correction). |
 | `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. |
 | `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Appropriate when QC data is partially compromised. |
-| `loess_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation for between-batch correction. Scales each batch so its biological sample median per feature matches the grand median across all batches. QC-independent. |
+| `loess_feature_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation. Scales each batch so its biological sample median per feature matches the grand median. More flexible than global scaling but noisier for sparse features. QC-independent. |
+| `loess_global_median` | Per-batch LOESS drift correction (QC-based) followed by global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. |
 | `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
 
 ## Normalisation
