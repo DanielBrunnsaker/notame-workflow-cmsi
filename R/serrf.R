@@ -332,5 +332,8 @@ correct_serrf <- function(data, num = 10) {
 
   assay(combined, 1, withDimnames = FALSE) <- e_new
 
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }

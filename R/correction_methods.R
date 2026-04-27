@@ -1,35 +1,60 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # High-level batch correction method wrappers
+#
+# All methods follow a two-step imputation strategy:
+#   1. LoD/2 (half-minimum) imputation before correction — gives each method a
+#      complete matrix to work with without introducing RF-model artifacts
+#   2. RF imputation after full correction — imputed values are predicted from
+#      batch- and drift-corrected data, giving more biologically meaningful
+#      estimates than imputing on raw or partially corrected data
+#
+# obs_mask (features × samples logical) tracks originally observed values and
+# is used to restore NAs before RF imputation. It is returned for downstream
+# use in QC metrics.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Wrapper around impute_rf that captures a pre-imputation missingness mask.
-# Returns list(data = imputed_SE, mask = logical_matrix) so the mask never
-# touches the SE and cannot confuse notame functions expecting a single assay.
-impute_with_mask <- function(data, ...) {
-  mask    <- !is.na(assay(data, 1))
-  imputed <- impute_rf(data, ...)
-  list(data = imputed, mask = mask)
+# Half-minimum (LoD/2) imputation.
+# Fills each NA with half the minimum observed value for that feature.
+# Used as a pre-correction fill to give correction methods a complete matrix.
+lod2_impute <- function(se) {
+  mat <- assay(se, 1)
+  for (i in seq_len(nrow(mat))) {
+    na_idx <- which(is.na(mat[i, ]))
+    if (length(na_idx) == 0) next
+    finite_min <- min(mat[i, ], na.rm = TRUE)
+    if (!is.finite(finite_min)) finite_min <- 1
+    mat[i, na_idx] <- 0.5 * finite_min
+  }
+  assay(se, 1, withDimnames = FALSE) <- mat
+  se
+}
+
+# Restore originally-missing positions to NA then RF impute.
+# se and obs_mask must have matching dimensions.
+rf_impute_corrected <- function(se, obs_mask) {
+  assay(se, 1, withDimnames = FALSE)[!obs_mask] <- NA
+  impute_rf(se, parallelize = "variables")
 }
 
 correct_none <- function(data) {
   message("==> No correction (imputation only)")
-  imp      <- impute_with_mask(data, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
+  obs_mask <- !is.na(assay(data, 1))
+  combined <- impute_rf(data, parallelize = "variables")
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
 correct_notame <- function(data, ruv_k) {
+  obs_mask <- !is.na(assay(data, 1))
+
+  # Cubic spline handles NAs natively — no LoD/2 before this step
   message("==> Drift correction (notame cubic spline)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), process_batch),
     merge = "samples"
   )
 
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
+  # LoD/2 fill before RUV which requires a complete matrix
+  combined <- lod2_impute(combined)
   pre      <- combined
 
   n_batches <- length(unique(colData(combined)$Batch))
@@ -41,12 +66,18 @@ correct_notame <- function(data, ruv_k) {
     combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
   }
 
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(sva)
 
+  obs_mask <- !is.na(assay(data, 1))
+
+  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
@@ -55,10 +86,8 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
     merge = "samples"
   )
 
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
+  # LoD/2 fill before ComBat which requires a complete matrix
+  combined <- lod2_impute(combined)
   pre      <- combined
 
   message("==> Between-batch correction (ComBat)")
@@ -67,14 +96,18 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
     batch = as.factor(colData(combined)$Batch)
   )
 
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
-
-
 
 correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(limma)
 
+  obs_mask <- !is.na(assay(data, 1))
+
+  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
@@ -83,10 +116,8 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
     merge = "samples"
   )
 
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
+  # LoD/2 fill before limma which requires a complete matrix
+  combined <- lod2_impute(combined)
   pre      <- combined
 
   n_batches <- length(unique(colData(combined)$Batch))
@@ -100,37 +131,39 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
     )
   }
 
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
-
 
 correct_combat_only <- function(data) {
   library(sva)
 
-  message("==> Imputation")
-  imp      <- impute_with_mask(data, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
-
-  pre <- combined
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
+  pre      <- data
 
   message("==> Batch correction (ComBat only, no drift correction)")
-  assay(combined, 1, withDimnames = FALSE) <- ComBat(
-    dat   = assay(combined, 1),
-    batch = as.factor(colData(combined)$Batch)
+  assay(data, 1, withDimnames = FALSE) <- ComBat(
+    dat   = assay(data, 1),
+    batch = as.factor(colData(data)$Batch)
   )
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(data, obs_mask)
 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-
 correct_pmp_qcrsc <- function(data) {
-
   library(pmp)
 
-  message("==> Drift correction + batch correction (pmp QC-RSC)")
+  obs_mask <- !is.na(assay(data, 1))
 
-  # ltQC remapped to "Sample" so pmp does not try to use it as a QC reference, because package stupid
+  message("==> Drift correction + batch correction (pmp QC-RSC)")
+  # QCRSC handles NAs natively — no LoD/2 before this step
+  # ltQC remapped to "Sample" so pmp does not try to use it as a QC reference
   classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
 
   combined <- QCRSC(
@@ -138,14 +171,12 @@ correct_pmp_qcrsc <- function(data) {
     order   = colData(data)$Injection_order,
     batch   = colData(data)$Batch,
     classes = classes_for_pmp,
-    spar    = 0,    # 0 = auto-select via cross-validation
+    spar    = 0,
     minQC   = 4
   )
 
-  message("==> Imputation")
-  imp      <- impute_with_mask(combined, parallelize = "variables")
-  combined <- imp$data
-  obs_mask <- imp$mask
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
 
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }
@@ -156,10 +187,10 @@ correct_batchcorr <- function(data,
                               qualRatio  = 0.4) {
   library(batchCorr)
 
-  message("==> Imputation (required by batchCorr)")
-  imp      <- impute_with_mask(data, parallelize = "variables")
-  data     <- imp$data
-  obs_mask <- imp$mask
+  obs_mask <- !is.na(assay(data, 1))
+
+  message("==> Pre-imputation (LoD/2, required by batchCorr)")
+  data <- lod2_impute(data)
 
   # batchCorr expects samples × features matrix
   mat  <- t(assay(data, "abundances"))
@@ -187,7 +218,7 @@ correct_batchcorr <- function(data,
         QCID         = "QC",
         G            = G,
         modelNames   = modelNames,
-        CVlimit      = Inf,   # disable internal feature removal; pre-filtering already done
+        CVlimit      = Inf,
         report       = FALSE
       )
     }, error = function(e) {
@@ -202,9 +233,9 @@ correct_batchcorr <- function(data,
 
   if (length(batch_corrObjs) == 1) {
     message("==> Single batch detected — skipping mergeBatches, using corrected batch directly")
-    b       <- names(batch_corrObjs)[1]
-    bc      <- batch_corrObjs[[b]]
-    merged  <- list(
+    b      <- names(batch_corrObjs)[1]
+    bc     <- batch_corrObjs[[b]]
+    merged <- list(
       peakTableCorr = bc$peakTable,
       peakTableOrg  = mat[which(as.character(meta$Batch) == b)[order(meta[which(as.character(meta$Batch) == b), "Injection_order"])], , drop = FALSE]
     )
@@ -213,7 +244,6 @@ correct_batchcorr <- function(data,
     merged <- mergeBatches(batch_corrObjs, qualRatio = qualRatio)
   }
 
-  # Reconstruct SE from merged matrices (samples × features → features × samples)
   kept_features <- colnames(merged$peakTableCorr)
   kept_samples  <- rownames(merged$peakTableCorr)
 
@@ -234,21 +264,19 @@ correct_batchcorr <- function(data,
   combined <- pre
   assay(combined, "abundances", withDimnames = FALSE) <- t(norm_result$peakTable)
 
-  # Subset mask to match features/samples kept by mergeBatches
   obs_mask <- obs_mask[kept_features, kept_samples, drop = FALSE]
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-
 correct_waveica <- function(data) {
-  # Install once with: remotes::install_github("dengkuistat/WaveICA2.0")
   library(WaveICA2.0)
 
-  message("==> Imputation (pre-WaveICA, required by algorithm)")
-  imp      <- impute_with_mask(data, parallelize = "variables")
-  data     <- imp$data
-  obs_mask <- imp$mask
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
 
   message("==> WaveICA2.0 correction")
   corrected_mat <- WaveICA_2.0(
@@ -260,5 +288,9 @@ correct_waveica <- function(data) {
     K               = length(unique(colData(data)$Batch)) * 2
   )
   assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
-  list(pre = data, post = data, obs_mask = obs_mask)
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(data, obs_mask)
+
+  list(pre = combined, post = combined, obs_mask = obs_mask)
 }
