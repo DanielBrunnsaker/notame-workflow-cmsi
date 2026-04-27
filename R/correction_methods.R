@@ -81,7 +81,7 @@ correct_notame <- function(data, ruv_k) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, log_transform = TRUE) {
+correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(sva)
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
@@ -100,25 +100,14 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, 
   combined <- lod2_impute(combined)
   pre      <- combined
 
-  if (log_transform) {
-    message("==> Log2 transformation (temporary, for ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-  }
-
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
     message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- ComBat(
-      dat   = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
-    )
-  }
-
-  if (log_transform) {
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+    mat <- ComBat(dat = assay(combined, 1), batch = as.factor(colData(combined)$Batch))
+    mat[mat < 0] <- NA
+    assay(combined, 1, withDimnames = FALSE) <- mat
   }
 
   message("==> Imputation (RF on corrected data)")
@@ -127,7 +116,78 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, log_transform = TRUE) {
+correct_loess_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+
+  # LOESS handles NAs natively — no LoD/2 needed before this step
+  message("==> Drift correction (LOESS)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Between-batch correction (per-feature median ratio normalisation)")
+    combined <- batch_median_correct(combined)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+# Per-feature batch median ratio correction.
+# For each feature, scales each batch so its biological sample median matches
+# the grand median across all batches. QC-independent — works without QC samples.
+# Falls back to no correction (scale = 1) for features or batches with fewer
+# than 2 finite positive observations.
+batch_median_correct <- function(se) {
+  mat      <- assay(se, 1)
+  cd       <- as.data.frame(colData(se))
+  samp_idx <- which(cd$QC == "Sample")
+  batches  <- unique(as.character(cd$Batch))
+
+  grand_med <- apply(mat[, samp_idx, drop = FALSE], 1, function(x) {
+    ok <- is.finite(x) & x > 0
+    if (sum(ok) < 2) NA_real_ else median(x[ok])
+  })
+
+  for (b in batches) {
+    b_idx      <- which(as.character(cd$Batch) == b)
+    b_samp_idx <- intersect(b_idx, samp_idx)
+
+    if (length(b_samp_idx) < 2) {
+      message("  Batch ", b, ": skipped (insufficient samples for median correction)")
+      next
+    }
+
+    batch_med <- apply(mat[, b_samp_idx, drop = FALSE], 1, function(x) {
+      ok <- is.finite(x) & x > 0
+      if (sum(ok) < 2) NA_real_ else median(x[ok])
+    })
+
+    scale_factor <- grand_med / batch_med
+    scale_factor[!is.finite(scale_factor) | scale_factor <= 0] <- 1
+
+    mat[, b_idx] <- mat[, b_idx] * scale_factor
+    message("  Batch ", b, ": scaled ", sum(is.finite(scale_factor) & scale_factor != 1),
+            "/", nrow(mat), " features")
+  }
+
+  assay(se, 1, withDimnames = FALSE) <- mat
+  se
+}
+
+correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
   library(limma)
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
@@ -146,25 +206,14 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, l
   combined <- lod2_impute(combined)
   pre      <- combined
 
-  if (log_transform) {
-    message("==> Log2 transformation (temporary, for limma)")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-  }
-
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
     message("==> Between-batch correction (limma removeBatchEffect)")
-    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
-      x     = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
-    )
-  }
-
-  if (log_transform) {
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+    mat <- removeBatchEffect(x = assay(combined, 1), batch = as.factor(colData(combined)$Batch))
+    mat[mat < 0] <- NA
+    assay(combined, 1, withDimnames = FALSE) <- mat
   }
 
   message("==> Imputation (RF on corrected data)")
@@ -173,28 +222,17 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, l
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_combat_only <- function(data, log_transform = TRUE) {
+correct_combat_only <- function(data) {
   library(sva)
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)
   pre      <- data
 
-  if (log_transform) {
-    message("==> Log2 transformation (temporary, for ComBat)")
-    assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
-  }
-
   message("==> Batch correction (ComBat only, no drift correction)")
-  assay(data, 1, withDimnames = FALSE) <- ComBat(
-    dat   = assay(data, 1),
-    batch = as.factor(colData(data)$Batch)
-  )
-
-  if (log_transform) {
-    message("==> Back-transforming to raw scale")
-    assay(data, 1, withDimnames = FALSE) <- 2^assay(data, 1)
-  }
+  mat <- ComBat(dat = assay(data, 1), batch = as.factor(colData(data)$Batch))
+  mat[mat < 0] <- NA
+  assay(data, 1, withDimnames = FALSE) <- mat
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(data, obs_mask)

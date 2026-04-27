@@ -36,7 +36,7 @@ if ("--help" %in% commandArgs(trailingOnly = TRUE)) {
   cat("
 Usage: Rscript notame-workflow.r [--help]
 
-Environment variables (all optional, hardcoded defaults shown):
+Environment variables (required variables are marked; all others are optional with defaults shown):
 
   IN_XLSX               Path to the MSDIAL alignment export (.xlsx). Required.
 
@@ -53,7 +53,7 @@ Environment variables (all optional, hardcoded defaults shown):
                         Each method is saved to its own output subfolder.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | serrf |
-                                 batchcorr | combat_only | loess_combat | loess_limma | waveica
+                                 batchcorr | combat_only | loess_combat | loess_limma | loess_median | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -61,7 +61,7 @@ Environment variables (all optional, hardcoded defaults shown):
   SAMPLE_DETECTION_LIMIT  Min fraction of biological samples a feature must be detected in
                         Default: 0.20
 
-  BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(Blank).
+  BLANK_RATIO           Remove features where mean(Sample) <= BLANK_RATIO * mean(SolvBlank).
                         Set to 'none' to disable.
                         Default: none
 
@@ -97,7 +97,7 @@ Environment variables (all optional, hardcoded defaults shown):
   RUV_K                 Number of unwanted variation factors for RUV (notame method only).
                         Default: 3
 
-  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat and loess_limma).
+  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_median).
                         Higher = smoother, more conservative correction.
                         Default: 0.75
 
@@ -105,12 +105,6 @@ Environment variables (all optional, hardcoded defaults shown):
                         batch has fewer than 4 finite QC observations. Only appropriate when
                         samples are in randomised injection order.
                         Default: FALSE
-
-  BATCH_LOG_TRANSFORM   If TRUE, apply log2 transformation before ComBat or limma batch
-                        correction (loess_combat, loess_limma, combat_only). Output for
-                        these methods will be on log2 scale.  Disable only if your data is already log-transformed
-                        or you have a specific reason to work on raw scale.
-                        Default: TRUE
 
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
@@ -176,7 +170,6 @@ CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ","
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
-BATCH_LOG_TRANSFORM       <- as.logical(get_env("BATCH_LOG_TRANSFORM", "TRUE"))
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 
@@ -345,8 +338,9 @@ if (!is.na(QC_RSD_FILTER)) {
     if (length(idx) < 2) return(rep(NA_real_, nrow(data)))
     apply(assay(data)[, idx, drop = FALSE], 1, function(x) {
       x <- x[!is.na(x)]
-      if (length(x) < 2 || median(x) == 0) return(NA_real_)
-      mad(x) / median(x)
+      med <- median(x)
+      if (length(x) < 2 || med <= 0) return(NA_real_)
+      mad(x) / med
     })
   }))
   colnames(rsd_mat) <- as.character(batches)
@@ -408,7 +402,6 @@ writeLines(c(
   paste("RUV_K:                  ", RUV_K),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
   paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
-  paste("BATCH_LOG_TRANSFORM:      ", BATCH_LOG_TRANSFORM),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
 ), file.path(interdir, "run_parameters.txt"))
 
@@ -477,11 +470,12 @@ for (method in CORRECTION_METHODS) {
       pmp_qcrsc    = correct_pmp_qcrsc(data),
       serrf        = correct_serrf(data),
       batchcorr    = correct_batchcorr(data),
-      combat_only  = correct_combat_only(data, BATCH_LOG_TRANSFORM),
-      loess_combat = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, BATCH_LOG_TRANSFORM),
-      loess_limma  = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, BATCH_LOG_TRANSFORM),
+      combat_only  = correct_combat_only(data),
+      loess_combat  = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_limma   = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_median  = correct_loess_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_median, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))

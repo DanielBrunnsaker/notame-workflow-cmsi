@@ -37,7 +37,9 @@ eval_ltqc <- function(se, min_det_frac = 0.5, mask = NULL) {
     x  <- mat[i, ]
     ok <- if (has_mask) obs[i, ] else !is.na(x)
     if (mean(ok) < min_det_frac || sum(ok) < 2) return(NA_real_)
-    mad(x[ok]) / median(x[ok])
+    med <- median(x[ok])
+    if (med <= 0) return(NA_real_)
+    mad(x[ok]) / med
   })
   median(rsd_per_feature, na.rm = TRUE)
 }

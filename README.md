@@ -1,6 +1,6 @@
 # notame-workflow-cmsi
 
-Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics data. Converts MSDIAL alignment exports to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel. Main differences with notame is the conceptual alignment with approaches used at the Chalmers Mass Spectrometry Infrastructure, and additionally the inclusion correction method evaluation.
+Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics data. Converts MSDIAL alignment exports to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel.
 
 Built around the [notame](https://github.com/antonvsdata/notame) R package.
 
@@ -65,7 +65,7 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
    )
    source("notame-workflow.r")
    ```
-   Other parameters can and should be used to adapt your processing. See Key parameters below.
+   See Key parameters below for all available options.
    Results will appear in `PROJECT_FOLDER` under a subfolder named `{COLUMN}_{POLARITY}` (e.g. `RP_POS`).
 
 ### Help
@@ -85,7 +85,7 @@ Rscript notame-workflow.r --help
 | `CORRECTION_METHODS` | No | `none,notame` | Comma-separated list of methods to run (see below) |
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
-| `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (0–1) |
+| `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
 | `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC sample for it to be used as reference. QC samples below this are removed before processing (e.g. empty injections) |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD (robust: MAD/median); feature must pass in ≥ 50% of batches. Set to e.g. `0.80` to enable |
 | `RSD_THRESHOLD` | No | `0.30` | RSD threshold for post-correction output filtering. Controls both global (`_rsdXX`) and per-batch (`_batchrsdXX`) filtered outputs. Suffix reflects the threshold, e.g. `_rsd40` if set to `0.40` |
@@ -94,9 +94,8 @@ Rscript notame-workflow.r --help
 | `LOW_INT_PERCENTILE` | No | `0.80` | Percentile used for the low-intensity filter |
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
-| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat` and `loess_limma`). Higher = smoother, more conservative |
+| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat`, `loess_limma`, `loess_median`). Higher = smoother, more conservative |
 | `LOESS_FALLBACK_TO_SAMPLES` | No | `FALSE` | If `TRUE`, fall back to fitting LOESS through biological samples when a batch has insufficient QC observations. Only valid when samples are in randomised injection order |
-| `BATCH_LOG_TRANSFORM` | No | `TRUE` | If `TRUE`, temporarily log2-transform before ComBat or limma batch correction (`loess_combat`, `loess_limma`, `combat_only`), then back-transform to raw scale. Satisfies the additive model assumption of these methods |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
 
@@ -109,9 +108,10 @@ Rscript notame-workflow.r --help
 | `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift. |
 | `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). |
 | `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). |
-| `combat_only` | ComBat batch correction only (no drift correction). Data is temporarily log2-transformed before ComBat. |
-| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. Data is temporarily log2-transformed. |
-| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Data is temporarily log2-transformed before limma. |
+| `combat_only` | ComBat batch correction only (no drift correction). |
+| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. |
+| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Appropriate when QC data is partially compromised. |
+| `loess_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation for between-batch correction. Scales each batch so its biological sample median per feature matches the grand median across all batches. QC-independent. |
 | `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
 
 ## Normalisation
@@ -176,7 +176,7 @@ Sample types are inferred from filenames. The following are recognised:
 | `QC` | contains `sQC` | Pooled QC samples used for drift/batch correction |
 | `ltQC` | contains `ltQC` | Long-term QC samples used as held-out validation only |
 | `Blank` | contains `SolvBlank` | Solvent blanks used for blank filtering |
-| `MatrixBlank` | contains `blank` (not SolvBlank) | Matrix blanks — retained but excluded from all filters |
+| `MatrixBlank` | contains `blank` (not SolvBlank) | Matrix blanks — excluded from processing |
 | `Wash` | contains `MeOH` | Column wash injections — excluded from processing |
 | `Cond` | contains `CondPlasma` | Conditioning injections — excluded from processing |
 | `SST` | contains `SST` + digit | System suitability test injections — excluded |

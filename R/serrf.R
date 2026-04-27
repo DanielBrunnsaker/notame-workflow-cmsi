@@ -283,8 +283,9 @@ correct_serrf <- function(data, num = 10) {
   n_cores <- if (n_cores_env == "") parallel::detectCores() - 1L else as.integer(n_cores_env)
   n_cores <- max(1L, n_cores)
   message("==> SERRF: starting ", n_cores, " parallel worker(s)")
-  cl <- parallel::makeCluster(n_cores)
-  on.exit(parallel::stopCluster(cl), add = TRUE)
+  cl         <- parallel::makeCluster(n_cores)
+  cl_stopped <- FALSE
+  on.exit({ if (!cl_stopped) parallel::stopCluster(cl) }, add = TRUE)
   parallel::clusterEvalQ(cl, library(ranger))
 
   # ── 6. Correct biological samples ───────────────────────────────────────────
@@ -336,6 +337,11 @@ correct_serrf <- function(data, num = 10) {
   }
 
   assay(combined, 1, withDimnames = FALSE) <- e_new
+
+  # Stop SERRF cluster before RF imputation so its idle workers
+  # don't compete with doParallel workers for memory and processes
+  parallel::stopCluster(cl)
+  cl_stopped <- TRUE
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
