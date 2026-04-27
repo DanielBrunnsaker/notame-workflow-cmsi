@@ -432,13 +432,15 @@ if (SAVE_PRE_CORRECTION_PLOTS) {
 old_summaries <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
 if (length(old_summaries) > 0) file.remove(old_summaries)
 
-# Build imputed raw reference for signal-preservation metric (biological samples only)
+# Build raw reference for signal-preservation metric (biological samples only).
+# Intentionally NOT imputed — NAs are kept so that signal_preservation_r is
+# computed only over originally-observed positions. Positions missing in the
+# raw data are excluded from the correlation naturally via is.finite() checks.
 message("==> Building raw reference for signal-preservation metric")
 raw_ref <- tryCatch({
-  raw_imp  <- impute_rf(data, parallelize = "variables")
-  samp_idx <- which(colData(raw_imp)$QC == "Sample")
-  mat      <- assay(raw_imp, 1)[, samp_idx, drop = FALSE]
-  colnames(mat) <- colData(raw_imp)$Sample_ID[samp_idx]
+  samp_idx <- which(colData(data)$QC == "Sample")
+  mat      <- assay(data, 1)[, samp_idx, drop = FALSE]
+  colnames(mat) <- colData(data)$Sample_ID[samp_idx]
   write.csv(as.data.frame(mat), file.path(output_dir, "raw_reference.csv"))
   mat
 }, error = function(e) {
