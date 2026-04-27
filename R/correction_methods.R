@@ -116,6 +116,76 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+correct_loess_ltqc_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+
+  message("==> Drift correction (LOESS)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+    }),
+    merge = "samples"
+  )
+
+  obs_mask <- !is.na(assay(combined, 1))
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Between-batch correction (per-feature ltQC median ratio normalisation)")
+    combined <- batch_ltqc_median_correct(combined)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+batch_ltqc_median_correct <- function(se) {
+  mat      <- assay(se, 1)
+  cd       <- as.data.frame(colData(se))
+  ltqc_idx <- which(cd$QC == "ltQC")
+  batches  <- unique(as.character(cd$Batch))
+
+  if (length(ltqc_idx) == 0) {
+    message("  WARNING: no ltQC samples found — skipping")
+    return(se)
+  }
+
+  # Grand reference: per-feature median across all ltQC samples across all batches
+  grand_med <- apply(mat[, ltqc_idx, drop = FALSE], 1, function(x) {
+    ok <- is.finite(x) & x > 0
+    if (sum(ok) < 2) NA_real_ else median(x[ok])
+  })
+
+  for (b in batches) {
+    b_idx      <- which(as.character(cd$Batch) == b)
+    b_ltqc_idx <- intersect(b_idx, ltqc_idx)
+
+    if (length(b_ltqc_idx) == 0) {
+      message("  Batch ", b, ": no ltQC samples — skipped")
+      next
+    }
+
+    batch_med <- apply(mat[, b_ltqc_idx, drop = FALSE], 1, function(x) {
+      ok <- is.finite(x) & x > 0
+      if (sum(ok) < 1) NA_real_ else median(x[ok])
+    })
+
+    scale_factor <- grand_med / batch_med
+    scale_factor[!is.finite(scale_factor) | scale_factor <= 0] <- 1
+
+    mat[, b_idx] <- mat[, b_idx] * scale_factor
+    message("  Batch ", b, ": scaled ", sum(is.finite(scale_factor) & scale_factor != 1),
+            "/", nrow(mat), " features (", length(b_ltqc_idx), " ltQC samples)")
+  }
+
+  assay(se, 1, withDimnames = FALSE) <- mat
+  se
+}
+
 correct_loess_feature_median <- function(data, loess_span, fallback_to_samples = FALSE) {
 
   # LOESS handles NAs natively — no LoD/2 needed before this step
