@@ -96,6 +96,7 @@ Rscript notame-workflow.r --help
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
 | `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat` and `loess_limma`). Higher = smoother, more conservative |
 | `LOESS_FALLBACK_TO_SAMPLES` | No | `FALSE` | If `TRUE`, fall back to fitting LOESS through biological samples when a batch has insufficient QC observations. Only valid when samples are in randomised injection order |
+| `BATCH_LOG_TRANSFORM` | No | `TRUE` | If `TRUE`, apply log2 transformation before ComBat or limma batch correction (`loess_combat`, `loess_limma`, `combat_only`). Output for these methods will be on log2 scale. |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
 
@@ -108,9 +109,9 @@ Rscript notame-workflow.r --help
 | `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift. |
 | `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). |
 | `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). |
-| `combat_only` | ComBat batch correction only (no drift correction). |
-| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. |
-| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. A linear model alternative to ComBat; appropriate when QC data is partially compromised. |
+| `combat_only` | ComBat batch correction only (no drift correction). Data is log2-transformed before ComBat; output is on log2 scale. |
+| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. Data is log2-transformed before ComBat; output is on log2 scale. |
+| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Data is log2-transformed before limma; output is on log2 scale. Appropriate when QC data is partially compromised. |
 | `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
 
 ## Normalisation

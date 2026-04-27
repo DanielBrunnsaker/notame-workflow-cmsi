@@ -52,14 +52,15 @@ correct_none <- function(data) {
 }
 
 correct_notame <- function(data, ruv_k) {
-  obs_mask <- !is.na(assay(data, 1))
-
   # Cubic spline handles NAs natively — no LoD/2 before this step
   message("==> Drift correction (notame cubic spline)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), process_batch),
     merge = "samples"
   )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
 
   # LoD/2 fill before RUV which requires a complete matrix
   combined <- lod2_impute(combined)
@@ -80,10 +81,8 @@ correct_notame <- function(data, ruv_k) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE, log_transform = TRUE) {
   library(sva)
-
-  obs_mask <- !is.na(assay(data, 1))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
@@ -94,15 +93,29 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
     merge = "samples"
   )
 
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
-  pre      <- combined
 
-  message("==> Between-batch correction (ComBat)")
-  assay(combined, 1, withDimnames = FALSE) <- ComBat(
-    dat   = assay(combined, 1),
-    batch = as.factor(colData(combined)$Batch)
-  )
+  if (log_transform) {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+  }
+
+  pre <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Between-batch correction (ComBat)")
+    assay(combined, 1, withDimnames = FALSE) <- ComBat(
+      dat   = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+  }
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
@@ -110,10 +123,8 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE, log_transform = TRUE) {
   library(limma)
-
-  obs_mask <- !is.na(assay(data, 1))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
@@ -124,9 +135,18 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
     merge = "samples"
   )
 
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
   # LoD/2 fill before limma which requires a complete matrix
   combined <- lod2_impute(combined)
-  pre      <- combined
+
+  if (log_transform) {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+  }
+
+  pre <- combined
 
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
@@ -145,12 +165,18 @@ correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_combat_only <- function(data) {
+correct_combat_only <- function(data, log_transform = TRUE) {
   library(sva)
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)
-  pre      <- data
+
+  if (log_transform) {
+    message("==> Log2 transformation")
+    assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
+  }
+
+  pre <- data
 
   message("==> Batch correction (ComBat only, no drift correction)")
   assay(data, 1, withDimnames = FALSE) <- ComBat(
@@ -258,19 +284,24 @@ correct_batchcorr <- function(data,
   pre <- data[kept_features, kept_samples]
   assay(pre, "abundances", withDimnames = FALSE) <- t(merged$peakTableOrg[kept_samples, ])
 
-  message("==> Between-batch normalization (batchCorr normalizeBatches)")
-  sgrp_merged <- ifelse(colData(pre)$QC == "QC", "QC", "Sample")
-  norm_result <- normalizeBatches(
-    peakTableCorr = merged$peakTableCorr[kept_samples, ],
-    batches       = as.character(colData(pre)$Batch),
-    sampleGroup   = sgrp_merged,
-    refGroup      = "QC",
-    population    = "all",
-    CVlimit       = Inf
-  )
-
   combined <- pre
-  assay(combined, "abundances", withDimnames = FALSE) <- t(norm_result$peakTable)
+  n_batches <- length(unique(as.character(colData(pre)$Batch)))
+  if (n_batches < 2) {
+    message("==> Between-batch normalization skipped (single batch)")
+    assay(combined, "abundances", withDimnames = FALSE) <- t(merged$peakTableCorr[kept_samples, ])
+  } else {
+    message("==> Between-batch normalization (batchCorr normalizeBatches)")
+    sgrp_merged <- ifelse(colData(pre)$QC == "QC", "QC", "Sample")
+    norm_result <- normalizeBatches(
+      peakTableCorr = merged$peakTableCorr[kept_samples, ],
+      batches       = as.character(colData(pre)$Batch),
+      sampleGroup   = sgrp_merged,
+      refGroup      = "QC",
+      population    = "all",
+      CVlimit       = Inf
+    )
+    assay(combined, "abundances", withDimnames = FALSE) <- t(norm_result$peakTable)
+  }
 
   obs_mask <- obs_mask[kept_features, kept_samples, drop = FALSE]
 

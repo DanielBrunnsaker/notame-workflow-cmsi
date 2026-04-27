@@ -106,6 +106,12 @@ Environment variables (all optional, hardcoded defaults shown):
                         samples are in randomised injection order.
                         Default: FALSE
 
+  BATCH_LOG_TRANSFORM   If TRUE, apply log2 transformation before ComBat or limma batch
+                        correction (loess_combat, loess_limma, combat_only). Output for
+                        these methods will be on log2 scale.  Disable only if your data is already log-transformed
+                        or you have a specific reason to work on raw scale.
+                        Default: TRUE
+
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
                         Default: none
@@ -170,6 +176,7 @@ CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ","
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
+BATCH_LOG_TRANSFORM       <- as.logical(get_env("BATCH_LOG_TRANSFORM", "TRUE"))
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 
@@ -401,6 +408,7 @@ writeLines(c(
   paste("RUV_K:                  ", RUV_K),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
   paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
+  paste("BATCH_LOG_TRANSFORM:      ", BATCH_LOG_TRANSFORM),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
 ), file.path(interdir, "run_parameters.txt"))
 
@@ -469,9 +477,9 @@ for (method in CORRECTION_METHODS) {
       pmp_qcrsc    = correct_pmp_qcrsc(data),
       serrf        = correct_serrf(data),
       batchcorr    = correct_batchcorr(data),
-      combat_only  = correct_combat_only(data),
-      loess_combat = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_limma  = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      combat_only  = correct_combat_only(data, BATCH_LOG_TRANSFORM),
+      loess_combat = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, BATCH_LOG_TRANSFORM),
+      loess_limma  = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, BATCH_LOG_TRANSFORM),
       waveica      = correct_waveica(data),
       stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, waveica")
     )
