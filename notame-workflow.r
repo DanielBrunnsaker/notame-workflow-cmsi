@@ -85,8 +85,8 @@ Environment variables (all optional, hardcoded defaults shown):
                         are removed before processing (empty injections, failed runs).
                         Default: 0.50
 
-  QC_RSD_FILTER         Pre-correction QC-RSD threshold. Features with QC CV above this
-                        value in all batches are removed (pass = acceptable in >= 1 batch).
+  QC_RSD_FILTER         Pre-correction QC-RSD threshold (robust: MAD/median). Features are
+                        removed if they fail the threshold in >= 50% of evaluable batches.
                         Set to 'none' to disable.
                         Default: none (disabled)
 
@@ -97,7 +97,8 @@ Environment variables (all optional, hardcoded defaults shown):
   RUV_K                 Number of unwanted variation factors for RUV (notame method only).
                         Default: 3
 
-  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat only).
+  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat and loess_limma).
+                        Higher = smoother, more conservative correction.
                         Default: 0.75
 
   LOESS_FALLBACK_TO_SAMPLES  If TRUE, fall back to fitting LOESS through all samples when a
@@ -143,8 +144,7 @@ QC_DETECTION_LIMIT     <- as.numeric(get_env("QC_DETECTION_LIMIT",     "0.60"))
 SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.20"))
 
 blank_ratio_env <- Sys.getenv("BLANK_RATIO", unset = "")
-BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip")) NA_real_ else
-               if (blank_ratio_env == "") 1 else
+BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip", "")) NA_real_ else
                as.numeric(blank_ratio_env)
 
 LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))

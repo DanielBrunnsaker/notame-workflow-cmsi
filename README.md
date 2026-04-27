@@ -9,7 +9,7 @@ Built around the [notame](https://github.com/antonvsdata/notame) R package.
 1. **MSDIAL conversion** — parses MSDIAL alignment exports, extracts sample metadata from filenames, and converts to notame-compatible format. Sample filenames must follow the format: `DATE_BATCH_COLUMN_POLARITY_SAMPLENAME_INJECTIONNUMBER`
 2. **Feature filtering** — sequential pre-correction filters to remove low-quality features
 3. **Drift and batch correction** — one or more correction methods run in parallel, each saved to its own output folder
-4. **Imputation** — random forest imputation of remaining missing values
+4. **Imputation** — two-step: LoD/2 (half-minimum per batch) fills missing values before correction algorithms that require a complete matrix; random forest imputation is then applied after full correction on originally-missing positions only
 5. **QC metrics and comparison** — per-method quality metrics computed and compared in a summary table
 6. **Feature clustering** — correlated features (e.g. isotopes, adducts) are grouped and compressed to one representative per cluster using notame's `cluster_features` / `compress_clusters`. Both the full unclustered and clustered outputs are retained.
 7. **Output** — feature tables, MSDIAL annotations, and QC plots per method
@@ -65,7 +65,7 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
    )
    source("notame-workflow.r")
    ```
-   Other parameters can and should be used to adapt your processing. See Key parameters below. 
+   Other parameters can and should be used to adapt your processing. See Key parameters below.
    Results will appear in `PROJECT_FOLDER` under a subfolder named `{COLUMN}_{POLARITY}` (e.g. `RP_POS`).
 
 ### Help
@@ -86,13 +86,15 @@ Rscript notame-workflow.r --help
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
 | `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
-| `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC sample for it to be used as a QC reference. QC samples below this threshold are removed before processing |
-| `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD; feature must pass in ≥ 1 batch. Set to e.g. `0.80` to enable |
-| `RSD_THRESHOLD` | No | `0.30` | RSD threshold for post-correction output filtering. Controls both global (`_rsdXX`) and per-batch (`_batchrsdXX`) filtered outputs |
-| `LOW_INT_FILTER_FRAC` | No | `0.10` | Low-intensity cutoff as fraction of mean p80 intensity |
-| `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(Blank). Set to e.g. `1` to enable |
+| `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC sample for it to be used as reference. QC samples below this are removed before processing (e.g. empty injections) |
+| `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD (robust: MAD/median); feature must pass in ≥ 50% of batches. Set to e.g. `0.80` to enable |
+| `RSD_THRESHOLD` | No | `0.30` | RSD threshold for post-correction output filtering. Controls both global (`_rsdXX`) and per-batch (`_batchrsdXX`) filtered outputs. Suffix reflects the threshold, e.g. `_rsd40` if set to `0.40` |
+| `LOW_INT_FILTER_FRAC` | No | `0.10` | Low-intensity cutoff as fraction of mean p80 intensity (overridden by `LOW_INT_FILTER`) |
+| `LOW_INT_FILTER` | No | `none` | Absolute low-intensity cutoff (overrides `LOW_INT_FILTER_FRAC`) |
+| `LOW_INT_PERCENTILE` | No | `0.80` | Percentile used for the low-intensity filter |
+| `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
-| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction. Higher = smoother, more conservative |
+| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat` and `loess_limma`). Higher = smoother, more conservative |
 | `LOESS_FALLBACK_TO_SAMPLES` | No | `FALSE` | If `TRUE`, fall back to fitting LOESS through biological samples when a batch has insufficient QC observations. Only valid when samples are in randomised injection order |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
@@ -107,15 +109,15 @@ Rscript notame-workflow.r --help
 | `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). |
 | `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). |
 | `combat_only` | ComBat batch correction only (no drift correction). |
-| `loess_combat` | Per-batch LOESS drift correction followed by ComBat batch correction. |
-| `loess_limma`  | Per-batch LOESS drift correction followed by `limma::removeBatchEffect()` for between-batch correction. Linear model alternative to ComBat. |
-| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
+| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. |
+| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. A linear model alternative to ComBat; appropriate when QC data is partially compromised. |
+| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
 
 ## Normalisation
 
 PQN (Probabilistic Quotient Normalisation) can be applied after drift/batch correction by setting `NORMALIZATION=pqn`. It scales each sample by the median ratio of its intensities to a reference spectrum. The reference is the median spectrum of pooled QC samples when QC samples are present, or the median of all biological samples otherwise.
 
-PQN (hopefully) corrects for differences in overall sample concentration or dilution, and is applied independently within each correction method branch.
+PQN corrects for differences in overall sample concentration or dilution, and is applied independently within each correction method branch.
 
 ## Output structure
 
@@ -128,18 +130,18 @@ output/
     pre_correction/
       QC_plots/
     {method}/
-      feature_table_full.xlsx       # all features, unclustered
-      feature_info_full.xlsx        # feature metadata with QC metrics, unclustered
-      annotations_full.xlsx         # MSDIAL annotations, unclustered
-      feature_table.xlsx            # one representative per cluster
+      feature_table_full.xlsx           # all features, unclustered
+      feature_info_full.xlsx            # feature metadata with QC metrics, unclustered
+      annotations_full.xlsx             # MSDIAL annotations, unclustered
+      feature_table.xlsx                # one representative per cluster
       feature_info.xlsx
-      annotations.xlsx              # annotations with cluster-member fallback
-      feature_table_full_rsd30.xlsx # above, with QC RSD < 30% filter applied
-      feature_table_rsd30.xlsx
-      annotations_rsd30.xlsx
-      feature_table_full_batchrsd30.xlsx  # above, with per-batch QC RSD < 30% in >= 50% of batches
-      feature_table_batchrsd30.xlsx
-      annotations_batchrsd30.xlsx
+      annotations.xlsx                  # annotations with cluster-member fallback
+      feature_table_full_rsdXX.xlsx     # above, with global QC RSD < XX% filter applied
+      feature_table_rsdXX.xlsx
+      annotations_rsdXX.xlsx
+      feature_table_full_batchrsdXX.xlsx  # above, with per-batch QC RSD < XX% in >= 50% of batches
+      feature_table_batchrsdXX.xlsx
+      annotations_batchrsdXX.xlsx
       QC_plots/
 intermediates/
   {COLUMN}_{POLARITY}/
@@ -148,14 +150,34 @@ intermediates/
     run_parameters.txt              # all parameter values used
 ```
 
+The `XX` in output filenames reflects `RSD_THRESHOLD` (e.g. `_rsd30` at default, `_rsd40` if `RSD_THRESHOLD=0.40`).
+
 ## Feature filtering
 
 Applied before correction, in order:
 
-1. Blank filter — removes features where sample signal ≤ `BLANK_RATIO` × blank signal
-2. Low-intensity filter — removes features whose p80 intensity is below `LOW_INT_FILTER_FRAC` × mean p80 across all features
+1. Blank filter — removes features where sample signal ≤ `BLANK_RATIO` × blank signal (SolvBlank samples only; disabled by default)
+2. Low-intensity filter — removes features whose p80 intensity is below `LOW_INT_FILTER_FRAC` × mean p80 across all features (or below `LOW_INT_FILTER` if set)
 3. Fill % filter — removes features with MSDIAL alignment confidence below `FILL_FILTER`
-4. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
-5. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
-6. Zero variance — removes features with no variation across samples
-7. QC-RSD filter — removes features with QC CV > `QC_RSD_FILTER` in all batches (disabled by default)
+4. QC sample quality check — removes individual QC samples with feature detection rate below `MIN_QC_SAMPLE_DETECTION` (e.g. empty injections, failed runs)
+5. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
+6. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
+7. Zero variance — removes features with no variation across samples
+8. QC-RSD filter — removes features with QC robust RSD (MAD/median) > `QC_RSD_FILTER` in ≥ 50% of batches (disabled by default)
+
+## Sample types
+
+Sample types are inferred from filenames. The following are recognised:
+
+| Type | Filename pattern | Role |
+|---|---|---|
+| `Sample` | (default) | Biological samples |
+| `QC` | contains `sQC` | Pooled QC samples used for drift/batch correction |
+| `ltQC` | contains `ltQC` | Long-term QC samples used as held-out validation only |
+| `Blank` | contains `SolvBlank` | Solvent blanks used for blank filtering |
+| `MatrixBlank` | contains `blank` (not SolvBlank) | Matrix blanks — retained but excluded from all filters |
+| `Wash` | contains `MeOH` | Column wash injections — excluded from processing |
+| `Cond` | contains `CondPlasma` | Conditioning injections — excluded from processing |
+| `SST` | contains `SST` + digit | System suitability test injections — excluded |
+| `MSe` | `MSe` in column/mode field | Data-independent MS² acquisitions — excluded |
+| `MS2` | `MS2` in column/mode field | Targeted MS² acquisitions — excluded |

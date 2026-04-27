@@ -13,18 +13,26 @@
 # use in QC metrics.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Half-minimum (LoD/2) imputation.
-# Fills each NA with half the minimum observed value for that feature.
-# Used as a pre-correction fill to give correction methods a complete matrix.
+# Half-minimum (LoD/2) imputation, applied per batch.
+# Fills each NA with half the minimum observed value for that feature within
+# the same batch. Per-batch rather than global because signal levels differ
+# between batches — a global minimum from a low-sensitivity batch would give
+# inappropriately small placeholders for high-sensitivity batches.
 lod2_impute <- function(se) {
-  mat <- assay(se, 1)
-  for (i in seq_len(nrow(mat))) {
-    na_idx <- which(is.na(mat[i, ]))
-    if (length(na_idx) == 0) next
-    finite_min <- min(mat[i, ], na.rm = TRUE)
-    if (!is.finite(finite_min)) finite_min <- 1
-    mat[i, na_idx] <- 0.5 * finite_min
+  mat     <- assay(se, 1)
+  batches <- as.character(colData(se)$Batch)
+
+  for (b in unique(batches)) {
+    b_idx <- which(batches == b)
+    for (i in seq_len(nrow(mat))) {
+      na_idx <- which(is.na(mat[i, b_idx]))
+      if (length(na_idx) == 0) next
+      finite_min <- min(mat[i, b_idx], na.rm = TRUE)
+      if (!is.finite(finite_min)) finite_min <- 1
+      mat[i, b_idx[na_idx]] <- 0.5 * finite_min
+    }
   }
+
   assay(se, 1, withDimnames = FALSE) <- mat
   se
 }

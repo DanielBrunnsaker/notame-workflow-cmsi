@@ -1,5 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# TODO: write some summary
+# Within-batch drift correction helpers.
+#
+# split_by_batch()       — splits a SE into a list of per-batch SEs, sorted by injection order
+# process_batch()        — notame cubic spline drift correction wrapper
+# loess_correct_batch()  — QC-based LOESS drift correction with optional sample fallback
+# linear_correct_batch() — QC-based linear drift correction
 
 split_by_batch <- function(se) {
   batches <- unique(colData(se)$Batch)

@@ -249,12 +249,17 @@ correct_serrf <- function(data, num = 10) {
            ifelse(cd$QC == "Sample",  "sample",
            ifelse(cd$QC == "ltQC",    "ltqc", NA_character_)))
 
-  # ── 3. SERRF half-minimum imputation (applied only to NA cells) ─────────────
-  for (i in seq_len(nrow(e_all))) {
-    row_vals <- e_all[i, ]
-    finite_min <- min(row_vals, na.rm = TRUE)
-    if (!is.finite(finite_min)) finite_min <- 1
-    e_all[i, is.na(row_vals)] <- 0.5 * finite_min
+  # ── 3. SERRF half-minimum imputation per batch (applied only to NA cells) ───
+  batches <- as.character(cd$Batch)
+  for (b in unique(batches)) {
+    b_idx <- which(batches == b)
+    for (i in seq_len(nrow(e_all))) {
+      na_idx <- which(is.na(e_all[i, b_idx]))
+      if (length(na_idx) == 0) next
+      finite_min <- min(e_all[i, b_idx], na.rm = TRUE)
+      if (!is.finite(finite_min)) finite_min <- 1
+      e_all[i, b_idx[na_idx]] <- 0.5 * finite_min
+    }
   }
 
   # ── 4. Index by sample type ──────────────────────────────────────────────────
