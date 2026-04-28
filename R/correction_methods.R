@@ -514,6 +514,109 @@ correct_batchcorr <- function(data,
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# Selects the reference batch for CordBat by picking the batch whose biological
+# samples have the lowest median feature RSD — i.e. the internally most
+# consistent batch, which provides the best GGM reference.
+select_ref_batch_cordbat <- function(se) {
+  mat      <- assay(se, 1)
+  cd       <- as.data.frame(colData(se))
+  batches  <- unique(as.character(cd$Batch))
+  samp_idx <- which(cd$QC == "Sample")
+
+  rsd_med <- sapply(batches, function(b) {
+    idx <- intersect(which(as.character(cd$Batch) == b), samp_idx)
+    if (length(idx) < 2) return(Inf)
+    median(apply(mat[, idx, drop = FALSE], 1, function(x) {
+      x <- x[is.finite(x) & x > 0]
+      if (length(x) < 2) NA_real_ else sd(x) / mean(x)
+    }), na.rm = TRUE)
+  })
+  names(rsd_med) <- batches
+
+  ref <- batches[which.min(rsd_med)]
+  message("  Batch RSD medians: ",
+          paste(batches, "=", round(rsd_med, 3), collapse = ", "))
+  message("  Auto-selected reference batch: ", ref)
+  ref
+}
+
+# Internal: runs CordBat on a LoD/2-imputed SE.
+# Transforms to log2 before calling CordBat, back-transforms after.
+# ref_batch: batch ID string, or NULL for auto-selection.
+run_cordbat <- function(combined, ref_batch) {
+  if (!exists("CordBat", mode = "function"))
+    source("R/Funcs_CordBat_algorithm.R")
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+    return(combined)
+  }
+
+  if (is.null(ref_batch)) ref_batch <- select_ref_batch_cordbat(combined)
+
+  message("==> Log2 transformation")
+  mat_log <- log2(assay(combined, 1))
+
+  X     <- t(mat_log)
+  batch <- as.character(colData(combined)$Batch)
+  # QC samples flagged so CordBat corrects them via the same coefficients
+  # without including them in GGM estimation. ltQC treated as samples.
+  group <- ifelse(colData(combined)$QC == "QC", "QC", "Sample")
+
+  message("==> Between-batch correction (CordBat, ref = ", ref_batch, ")")
+  result <- tryCatch(
+    CordBat(X = X, batch = batch, group = group, grouping = FALSE,
+            ref.batch = ref_batch, eps = 1e-5, print.detail = FALSE),
+    error = function(e) stop("CordBat failed: ", conditionMessage(e))
+  )
+
+  X_cor <- result$X.cor.withQC
+  if (is.null(X_cor)) X_cor <- result$X.cor
+
+  message("==> Back-transforming to raw scale")
+  assay(combined, 1, withDimnames = FALSE) <- t(2^X_cor)
+  combined
+}
+
+correct_cordbat_only <- function(data, ref_batch = NULL) {
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
+  pre      <- data
+
+  data <- run_cordbat(data, ref_batch)
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(data, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+correct_loess_cordbat <- function(data, loess_span, fallback_to_samples = FALSE,
+                                  ref_batch = NULL) {
+  # LOESS handles NAs natively — no LoD/2 before this step
+  message("==> Drift correction (LOESS)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+    }),
+    merge = "samples"
+  )
+
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before CordBat which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  combined <- run_cordbat(combined, ref_batch)
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 correct_waveica <- function(data) {
   library(WaveICA2.0)
 

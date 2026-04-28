@@ -53,7 +53,9 @@ Environment variables (required variables are marked; all others are optional wi
                         Each method is saved to its own output subfolder.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | serrf |
-                                 batchcorr | combat_only | loess_combat | loess_limma | loess_ltqc_median | loess_feature_median | loess_global_median | waveica
+                                 batchcorr | combat_only | loess_combat | loess_limma |
+                                 loess_ltqc_median | loess_feature_median | loess_global_median |
+                                 cordbat_only | loess_cordbat | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -106,6 +108,11 @@ Environment variables (required variables are marked; all others are optional wi
                         samples are in randomised injection order.
                         Default: FALSE
 
+  CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
+                        All other batches are corrected onto this batch.
+                        Leave unset to auto-select the batch with the lowest median feature RSD.
+                        Default: (auto)
+
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
                         Default: none
@@ -157,19 +164,23 @@ MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50")
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods:
-#   "none"         — imputation only (no correction; baseline)
-#   "notame"       — per-batch cubic spline drift correction + RUV batch correction
-#   "pmp_qcrsc"    — QC-RSC spline drift correction (pmp package)
-#   "serrf"        — SERRF random forest correction (Fan et al. 2019)
-#   "batchcorr"    — cluster-based spline drift + between-batch normalisation (Brunius et al.)
-#   "combat_only"  — ComBat batch correction only (no drift correction)
-#   "loess_combat" — per-batch LOESS drift correction + ComBat batch correction
-#   "waveica"      — WaveICA 2.0 wavelet-based correction
+#   "none"           — imputation only (no correction; baseline)
+#   "notame"         — per-batch cubic spline drift correction + RUV batch correction
+#   "pmp_qcrsc"      — QC-RSC spline drift correction (pmp package)
+#   "serrf"          — SERRF random forest correction (Fan et al. 2019)
+#   "batchcorr"      — cluster-based spline drift + between-batch normalisation (Brunius et al.)
+#   "combat_only"    — ComBat batch correction only (no drift correction)
+#   "loess_combat"   — per-batch LOESS drift correction + ComBat batch correction
+#   "cordbat_only"   — CordBat batch correction only (GGM-based, no drift correction)
+#   "loess_cordbat"  — per-batch LOESS drift correction + CordBat batch correction
+#   "waveica"        — WaveICA 2.0 wavelet-based correction
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
+cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
+CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 
@@ -402,6 +413,7 @@ writeLines(c(
   paste("RUV_K:                  ", RUV_K),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
   paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
+  paste("CORDBAT_REF_BATCH:      ", if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
 ), file.path(interdir, "run_parameters.txt"))
 
@@ -476,8 +488,10 @@ for (method in CORRECTION_METHODS) {
       loess_ltqc_median    = correct_loess_ltqc_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
+      loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_ltqc_median, loess_feature_median, loess_global_median, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_ltqc_median, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
