@@ -87,6 +87,12 @@ Environment variables (required variables are marked; all others are optional wi
                         are removed before processing (empty injections, failed runs).
                         Default: 0.50
 
+  MIN_BATCH_DETECTION   Minimum number of detections a feature must have in every batch.
+                        Features absent from any entire batch are removed — they have no
+                        real measurements there and would be all-imputed placeholders.
+                        Set to 0 to disable.
+                        Default: 1
+
   QC_RSD_FILTER         Pre-correction QC-RSD threshold (robust: MAD/median). Features are
                         removed if they fail the threshold in >= 50% of evaluable batches.
                         Set to 'none' to disable.
@@ -161,6 +167,7 @@ FILL_FILTER         <- as.numeric(get_env("FILL_FILTER",         "0.10"))
 qc_rsd_env    <- Sys.getenv("QC_RSD_FILTER", unset = "")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
+MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods:
@@ -340,6 +347,21 @@ zero_var <- apply(assay(data), 1, function(x) {
 data <- data[!zero_var, ]
 n_after_zerovar <- nrow(data)
 
+# Per-batch detection filter: feature must have >= MIN_BATCH_DETECTION observations
+# in every batch. Features absent from a whole batch have no real measurements
+# there — all values would be LoD/2 placeholders.
+if (MIN_BATCH_DETECTION > 0) {
+  cd_batch  <- as.data.frame(colData(data))
+  batches   <- unique(cd_batch$Batch)
+  batch_det <- do.call(cbind, lapply(batches, function(b) {
+    idx <- which(cd_batch$Batch == b)
+    rowSums(!is.na(assay(data)[, idx, drop = FALSE]))
+  }))
+  pass_all_batches <- apply(batch_det, 1, function(x) all(x >= MIN_BATCH_DETECTION))
+  data <- data[pass_all_batches, ]
+}
+n_after_batchdet <- nrow(data)
+
 # Pre-imputation QC-RSD filter (per batch; pass = acceptable RSD in >= 1 batch)
 if (!is.na(QC_RSD_FILTER)) {
   cd_pre  <- as.data.frame(colData(data))
@@ -372,20 +394,22 @@ filter_log <- data.frame(
     sprintf("QC detection (>= %.0f%%)", QC_DETECTION_LIMIT * 100),
     sprintf("Sample detection (>= %.0f%%)", SAMPLE_DETECTION_LIMIT * 100),
     "Zero variance",
+    if (MIN_BATCH_DETECTION > 0) sprintf("Per-batch detection (>= %d per batch)", MIN_BATCH_DETECTION) else "Per-batch detection (disabled)",
     if (!is.na(QC_RSD_FILTER)) sprintf("QC-RSD filter (<= %.0f%% in >= 1 batch)", QC_RSD_FILTER * 100) else "QC-RSD filter (disabled)"
   ),
   features_removed = c(
-    n_before        - n_after_blank,
-    n_after_blank   - n_after_lowint,
-    n_after_lowint  - n_after_fill,
-    n_after_fill    - n_after_qc,
-    n_after_qc      - n_after_sample,
-    n_after_sample  - n_after_zerovar,
-    n_after_zerovar - n_after_qcrsd
+    n_before          - n_after_blank,
+    n_after_blank     - n_after_lowint,
+    n_after_lowint    - n_after_fill,
+    n_after_fill      - n_after_qc,
+    n_after_qc        - n_after_sample,
+    n_after_sample    - n_after_zerovar,
+    n_after_zerovar   - n_after_batchdet,
+    n_after_batchdet  - n_after_qcrsd
   ),
   features_remaining = c(
     n_after_blank, n_after_lowint, n_after_fill,
-    n_after_qc, n_after_sample, n_after_zerovar, n_after_qcrsd
+    n_after_qc, n_after_sample, n_after_zerovar, n_after_batchdet, n_after_qcrsd
   )
 )
 cat("\n--- Pre-filtering summary ---\n")
@@ -408,6 +432,7 @@ writeLines(c(
   paste("LOW_INT_CUTOFF:         ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
   paste("FILL_FILTER:            ", FILL_FILTER),
   paste("MIN_QC_SAMPLE_DETECTION: ", MIN_QC_SAMPLE_DETECTION),
+  paste("MIN_BATCH_DETECTION:    ", MIN_BATCH_DETECTION),
   paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
   paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
   paste("RUV_K:                  ", RUV_K),

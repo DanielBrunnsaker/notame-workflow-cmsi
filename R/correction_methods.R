@@ -587,32 +587,15 @@ run_cordbat <- function(combined, ref_batch) {
   # without including them in GGM estimation. ltQC treated as samples.
   group <- ifelse(colData(combined)$QC == "QC", "QC", "Sample")
 
-  # CordBat calls scale() internally; constant columns (zero variance) crash it.
-  # These arise when a feature was all-NA in a batch and got a uniform LoD/2 value.
-  # Exclude them from correction — they will be restored to NA by rf_impute_corrected.
-  feat_var    <- apply(X, 2, var, na.rm = TRUE)
-  const_feats <- which(!is.finite(feat_var) | feat_var < .Machine$double.eps)
-  if (length(const_feats) > 0) {
-    message("  Excluding ", length(const_feats),
-            " zero-variance features from CordBat (will be RF-imputed)")
-    X_input <- X[, -const_feats, drop = FALSE]
-  } else {
-    X_input <- X
-  }
-
   message("==> Between-batch correction (CordBat, ref = ", ref_batch, ")")
   result <- tryCatch(
-    CordBat(X = X_input, batch = batch, group = group, grouping = FALSE,
+    CordBat(X = X, batch = batch, group = group, grouping = FALSE,
             ref.batch = ref_batch, eps = 1e-5, print.detail = FALSE),
     error = function(e) stop("CordBat failed: ", conditionMessage(e))
   )
 
-  X_cor_sub <- result$X.cor.withQC
-  if (is.null(X_cor_sub)) X_cor_sub <- result$X.cor
-
-  # Reinsert corrected values; constant features keep their LoD/2 log2 values
-  X_cor <- X
-  if (length(const_feats) > 0) X_cor[, -const_feats] <- X_cor_sub else X_cor <- X_cor_sub
+  X_cor <- result$X.cor.withQC
+  if (is.null(X_cor)) X_cor <- result$X.cor
 
   message("==> Back-transforming to raw scale")
   assay(combined, 1, withDimnames = FALSE) <- t(2^X_cor)

@@ -4,15 +4,6 @@
 
 library(igraph)
 
-# Drop-in replacement for scale(center=TRUE, scale=TRUE) that leaves constant
-# columns as zero rather than producing NaN or throwing an error.
-safe_scale <- function(X) {
-  X   <- scale(X, center = TRUE, scale = FALSE)
-  sds <- apply(X, 2, sd)
-  sds[sds < .Machine$double.eps] <- 1
-  sweep(X, 2, sds, "/")
-}
-
 # ----------------------------------------------
 # Community detection
 # ----------------------------------------------
@@ -263,7 +254,7 @@ graphicalLasso <- function(X, rho){
   N <- nrow(X)
   p <- ncol(X)
   # centered and scaling
-  X <- safe_scale(X)
+  X <- scale(X, center = TRUE, scale = TRUE)
   # get covariance matrix
   S <- cov(X)
   
@@ -462,7 +453,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
         Theta <- c.mat$Theta
         
         # compute error for CV set
-        X.cv.sca <- safe_scale(X.cv)
+        X.cv.sca <- scale(X.cv, center = TRUE, scale = TRUE)
         S.cv <- cov(X.cv.sca)
         
         k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -474,7 +465,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
       Theta <- c.mat$Theta
       
       # compute error for CV set
-      X.sca <- safe_scale(X)
+      X.sca <- scale(X, center = TRUE, scale = TRUE)
       S <- cov(X.sca)
       
       k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -535,7 +526,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -564,7 +555,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -641,7 +632,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
   W.list <- list()
   for (g in c(1: G)) {
     X.gi <- rbind(X0.glist[[g]], X1.cor.glist[[g]])
-    X.gi.sca <- safe_scale(X.gi)
+    X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
     S0_gi <- cov(X.gi.sca)
     W_i <- S0_gi + penal.rho * diag(1, p)
     W.list[[g]] <- W_i
@@ -663,7 +654,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
       X1.gi.cor <- X1.glist[[g]] %*% coef.A + coef.B.gi
       
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
       S_i <- cov(X.gi.sca)
       S.list[[g]] <- S_i
     }
@@ -812,7 +803,7 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
         X.gi <- rbind(X0.glist[[i]], X1.cor.glist[[i]])
         
         # get empirical covariance matrix
-        X.gi.sca <- safe_scale(X.gi)
+        X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
         S_i <- cov(X.gi.sca)
         Theta_i <- Theta.list[[i]]
         E.num.gi <- sum(Theta_i[upper.tri(Theta_i, diag = FALSE)] != 0)
@@ -848,15 +839,8 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
 # Delete outliers in data 
 # --------------------------
 DelOutlier <- function(X) {
-  # Exclude zero-variance columns before PCA — prcomp(scale.=TRUE) fails on them
-  feat_var <- apply(X, 2, var, na.rm = TRUE)
-  X_var    <- X[, is.finite(feat_var) & feat_var > .Machine$double.eps, drop = FALSE]
-  if (ncol(X_var) < 2)
-    return(list(delsampIdx = c(), X.out = X))
-  n_pcs <- min(3, nrow(X_var) - 1, ncol(X_var))
-  pca.dat <- prcomp(X_var, center = TRUE, scale. = TRUE, rank. = n_pcs)
-  pca.dat.varX <- matrix(0, nrow(X), 3)
-  pca.dat.varX[, seq_len(n_pcs)] <- pca.dat$x[, seq_len(n_pcs), drop = FALSE]
+  pca.dat <- prcomp(X, center = TRUE, scale. = TRUE, rank. = 3)
+  pca.dat.varX <- pca.dat$x
   delsampIdx <- c()
   for (i in c(1: 3)) {
     pc.i <- pca.dat.varX[, i]
