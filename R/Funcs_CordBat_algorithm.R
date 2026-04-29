@@ -3,8 +3,6 @@
 # Date: 2022.12.28
 
 library(igraph)
-library(lava)
-library(mixOmics)
 library(MASS)
 library(car)
 
@@ -461,7 +459,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
         S.cv <- cov(X.cv.sca)
         
         k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
-        CVerr1[i, r] <- k * log(CVset.size) - CVset.size * (log(det(Theta)) - tr(S.cv %*% Theta))
+        CVerr1[i, r] <- k * log(CVset.size) - CVset.size * (log(det(Theta)) - sum(diag(S.cv %*% Theta)))
       }
     }
     else {
@@ -473,7 +471,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
       S <- cov(X.sca)
       
       k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
-      CVerr2[r] <- k * log(N) - 2 * (log(det(Theta)) - tr(S %*% Theta))
+      CVerr2[r] <- k * log(N) - 2 * (log(det(Theta)) - sum(diag(S %*% Theta)))
     }
     
   }
@@ -813,7 +811,7 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
         E.num.gi <- sum(Theta_i[upper.tri(Theta_i, diag = FALSE)] != 0)
         
         # EBIC
-        ebic.gvec[i] <- - N_gvec[i] * (log(det(Theta_i)) - tr(S_i %*% Theta_i)) + 
+        ebic.gvec[i] <- - N_gvec[i] * (log(det(Theta_i)) - sum(diag(S_i %*% Theta_i))) +
           E.num.gi * log(N_gvec[i]) + 4 * E.num.gi * r * log(p)
       }
       
@@ -843,8 +841,8 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
 # Delete outliers in data 
 # --------------------------
 DelOutlier <- function(X) {
-  pca.dat <- pca(X, ncomp = 3, center = TRUE, scale = TRUE)
-  pca.dat.varX <- pca.dat$variates$X
+  pca.dat <- prcomp(X, center = TRUE, scale. = TRUE, rank. = 3)
+  pca.dat.varX <- pca.dat$x
   delsampIdx <- c()
   for (i in c(1: 3)) {
     pc.i <- pca.dat.varX[, i]

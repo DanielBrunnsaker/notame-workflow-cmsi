@@ -544,8 +544,10 @@ select_ref_batch_cordbat <- function(se) {
 # Transforms to log2 before calling CordBat, back-transforms after.
 # ref_batch: batch ID string, or NULL for auto-selection.
 run_cordbat <- function(combined, ref_batch) {
-  if (!exists("CordBat", mode = "function"))
+  if (!exists("CordBat", mode = "function")) {
+    library(igraph); library(MASS); library(car)
     source("R/Funcs_CordBat_algorithm.R")
+  }
 
   n_batches <- length(unique(colData(combined)$Batch))
   if (n_batches < 2) {
