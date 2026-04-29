@@ -587,15 +587,34 @@ run_cordbat <- function(combined, ref_batch) {
   # without including them in GGM estimation. ltQC treated as samples.
   group <- ifelse(colData(combined)$QC == "QC", "QC", "Sample")
 
+  # StARS subsamples 70% of the reference batch repeatedly to select the GGM
+  # regularisation parameter. Features that are near-constant within the
+  # reference batch will be constant in many of those subsamples, crashing
+  # scale(). Exclude them here and restore after correction — they will be
+  # handled by RF imputation downstream anyway.
+  ref_idx  <- which(batch == ref_batch)
+  ref_var  <- apply(X[ref_idx, , drop = FALSE], 2, var, na.rm = TRUE)
+  keep_idx <- which(is.finite(ref_var) & ref_var > .Machine$double.eps)
+  n_excl   <- ncol(X) - length(keep_idx)
+  if (n_excl > 0)
+    message("  Excluding ", n_excl, " near-constant features in reference batch",
+            " from CordBat (insufficient variance for GGM subsampling)")
+
+  X_input <- X[, keep_idx, drop = FALSE]
+
   message("==> Between-batch correction (CordBat, ref = ", ref_batch, ")")
   result <- tryCatch(
-    CordBat(X = X, batch = batch, group = group, grouping = FALSE,
+    CordBat(X = X_input, batch = batch, group = group, grouping = FALSE,
             ref.batch = ref_batch, eps = 1e-5, print.detail = FALSE),
     error = function(e) stop("CordBat failed: ", conditionMessage(e))
   )
 
-  X_cor <- result$X.cor.withQC
-  if (is.null(X_cor)) X_cor <- result$X.cor
+  X_cor_sub <- result$X.cor.withQC
+  if (is.null(X_cor_sub)) X_cor_sub <- result$X.cor
+
+  # Reinsert corrected values; excluded features keep their LoD/2 log2 values
+  X_cor <- X
+  X_cor[, keep_idx] <- X_cor_sub
 
   message("==> Back-transforming to raw scale")
   assay(combined, 1, withDimnames = FALSE) <- t(2^X_cor)
