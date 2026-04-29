@@ -3349,6 +3349,10 @@
       "Author": "Daniel J. Stekhoven [aut, cre]",
       "Repository": "CRAN"
     },
+    "mixOmics": {
+      "Package": "mixOmics",
+      "Source": "Bioconductor"
+    },
     "multitaper": {
       "Package": "multitaper",
       "Version": "1.0-17",
