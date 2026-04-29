@@ -7,7 +7,6 @@ library(lava)
 library(mixOmics)
 library(MASS)
 library(car)
-library(DMwR2)
 
 # ----------------------------------------------
 # Community detection
@@ -887,13 +886,12 @@ ImputeOutlier <- function(X) {
     X.out[, i] <- dat.i
   }
   
-  na.num <- sum(is.na(X.out))
-  if (na.num != 0) {
-    X.out <- as.data.frame(X.out)
-    X.out <- knnImputation(X.out)
+  # Impute any remaining NAs with column median
+  for (j in seq_len(ncol(X.out))) {
+    na_idx <- which(is.na(X.out[, j]))
+    if (length(na_idx) > 0)
+      X.out[na_idx, j] <- median(X.out[, j], na.rm = TRUE)
   }
-  
-  X.out <- as.matrix(X.out)
   
   return(X.out)
 }
