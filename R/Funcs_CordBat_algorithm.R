@@ -3,8 +3,6 @@
 # Date: 2022.12.28
 
 library(igraph)
-library(MASS)
-library(car)
 
 # ----------------------------------------------
 # Community detection

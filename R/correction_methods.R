@@ -545,7 +545,7 @@ select_ref_batch_cordbat <- function(se) {
 # ref_batch: batch ID string, or NULL for auto-selection.
 run_cordbat <- function(combined, ref_batch) {
   if (!exists("CordBat", mode = "function")) {
-    library(igraph); library(MASS); library(car)
+    library(igraph)
     source("R/Funcs_CordBat_algorithm.R")
   }
 
