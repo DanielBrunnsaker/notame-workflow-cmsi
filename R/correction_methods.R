@@ -514,28 +514,49 @@ correct_batchcorr <- function(data,
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-# Selects the reference batch for CordBat by picking the batch whose biological
-# samples have the lowest median feature RSD — i.e. the internally most
-# consistent batch, which provides the best GGM reference.
+# Selects the reference batch for CordBat.
+# Prefers batches with QC samples and ranks by median robust QC RSD (MAD/median).
+# Batches without QC samples are excluded from candidacy — their quality cannot
+# be verified and they received no LOESS drift correction.
+# Falls back to biological sample RSD only if no batch has QC samples.
 select_ref_batch_cordbat <- function(se) {
-  mat      <- assay(se, 1)
-  cd       <- as.data.frame(colData(se))
-  batches  <- unique(as.character(cd$Batch))
-  samp_idx <- which(cd$QC == "Sample")
+  mat     <- assay(se, 1)
+  cd      <- as.data.frame(colData(se))
+  batches <- unique(as.character(cd$Batch))
 
-  rsd_med <- sapply(batches, function(b) {
-    idx <- intersect(which(as.character(cd$Batch) == b), samp_idx)
-    if (length(idx) < 2) return(Inf)
-    median(apply(mat[, idx, drop = FALSE], 1, function(x) {
-      x <- x[is.finite(x) & x > 0]
-      if (length(x) < 2) NA_real_ else sd(x) / mean(x)
-    }), na.rm = TRUE)
-  })
-  names(rsd_med) <- batches
+  qc_batches <- intersect(batches, unique(as.character(cd$Batch[cd$QC == "QC"])))
 
-  ref <- batches[which.min(rsd_med)]
-  message("  Batch RSD medians: ",
-          paste(batches, "=", round(rsd_med, 3), collapse = ", "))
+  if (length(qc_batches) > 0) {
+    rsd_med <- sapply(qc_batches, function(b) {
+      idx <- which(as.character(cd$Batch) == b & cd$QC == "QC")
+      if (length(idx) < 2) return(Inf)
+      median(apply(mat[, idx, drop = FALSE], 1, function(x) {
+        x <- x[is.finite(x) & x > 0]
+        if (length(x) < 2) NA_real_ else mad(x) / median(x)
+      }), na.rm = TRUE)
+    })
+    names(rsd_med) <- qc_batches
+    message("  Batch QC RSD medians: ",
+            paste(qc_batches, "=", round(rsd_med, 3), collapse = ", "))
+    if (length(batches) > length(qc_batches))
+      message("  Excluded from candidacy (no QC samples): ",
+              paste(setdiff(batches, qc_batches), collapse = ", "))
+  } else {
+    message("  WARNING: no batches have QC samples — falling back to biological sample RSD")
+    samp_idx <- which(cd$QC == "Sample")
+    rsd_med <- sapply(batches, function(b) {
+      idx <- intersect(which(as.character(cd$Batch) == b), samp_idx)
+      if (length(idx) < 2) return(Inf)
+      median(apply(mat[, idx, drop = FALSE], 1, function(x) {
+        x <- x[is.finite(x) & x > 0]
+        if (length(x) < 2) NA_real_ else sd(x) / mean(x)
+      }), na.rm = TRUE)
+    })
+    names(rsd_med) <- batches
+    qc_batches <- batches
+  }
+
+  ref <- names(rsd_med)[which.min(rsd_med)]
   message("  Auto-selected reference batch: ", ref)
   ref
 }
@@ -566,15 +587,32 @@ run_cordbat <- function(combined, ref_batch) {
   # without including them in GGM estimation. ltQC treated as samples.
   group <- ifelse(colData(combined)$QC == "QC", "QC", "Sample")
 
+  # CordBat calls scale() internally; constant columns (zero variance) crash it.
+  # These arise when a feature was all-NA in a batch and got a uniform LoD/2 value.
+  # Exclude them from correction — they will be restored to NA by rf_impute_corrected.
+  feat_var    <- apply(X, 2, var, na.rm = TRUE)
+  const_feats <- which(!is.finite(feat_var) | feat_var < .Machine$double.eps)
+  if (length(const_feats) > 0) {
+    message("  Excluding ", length(const_feats),
+            " zero-variance features from CordBat (will be RF-imputed)")
+    X_input <- X[, -const_feats, drop = FALSE]
+  } else {
+    X_input <- X
+  }
+
   message("==> Between-batch correction (CordBat, ref = ", ref_batch, ")")
   result <- tryCatch(
-    CordBat(X = X, batch = batch, group = group, grouping = FALSE,
+    CordBat(X = X_input, batch = batch, group = group, grouping = FALSE,
             ref.batch = ref_batch, eps = 1e-5, print.detail = FALSE),
     error = function(e) stop("CordBat failed: ", conditionMessage(e))
   )
 
-  X_cor <- result$X.cor.withQC
-  if (is.null(X_cor)) X_cor <- result$X.cor
+  X_cor_sub <- result$X.cor.withQC
+  if (is.null(X_cor_sub)) X_cor_sub <- result$X.cor
+
+  # Reinsert corrected values; constant features keep their LoD/2 log2 values
+  X_cor <- X
+  if (length(const_feats) > 0) X_cor[, -const_feats] <- X_cor_sub else X_cor <- X_cor_sub
 
   message("==> Back-transforming to raw scale")
   assay(combined, 1, withDimnames = FALSE) <- t(2^X_cor)
