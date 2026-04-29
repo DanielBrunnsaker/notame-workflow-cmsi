@@ -848,8 +848,15 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
 # Delete outliers in data 
 # --------------------------
 DelOutlier <- function(X) {
-  pca.dat <- prcomp(X, center = TRUE, scale. = TRUE, rank. = 3)
-  pca.dat.varX <- pca.dat$x
+  # Exclude zero-variance columns before PCA — prcomp(scale.=TRUE) fails on them
+  feat_var <- apply(X, 2, var, na.rm = TRUE)
+  X_var    <- X[, is.finite(feat_var) & feat_var > .Machine$double.eps, drop = FALSE]
+  if (ncol(X_var) < 2)
+    return(list(delsampIdx = c(), X.out = X))
+  n_pcs <- min(3, nrow(X_var) - 1, ncol(X_var))
+  pca.dat <- prcomp(X_var, center = TRUE, scale. = TRUE, rank. = n_pcs)
+  pca.dat.varX <- matrix(0, nrow(X), 3)
+  pca.dat.varX[, seq_len(n_pcs)] <- pca.dat$x[, seq_len(n_pcs), drop = FALSE]
   delsampIdx <- c()
   for (i in c(1: 3)) {
     pc.i <- pca.dat.varX[, i]
