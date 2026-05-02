@@ -105,6 +105,11 @@ Environment variables (required variables are marked; all others are optional wi
   RUV_K                 Number of unwanted variation factors for RUV (notame method only).
                         Default: 3
 
+  SERRF_NUM             Number of correlated features used as RF predictors per feature model
+                        in SERRF. Lower = less overfitting risk; recommended ≤ floor(QC_n/2).
+                        Automatically capped at floor(min_QC_per_batch / 2) at runtime.
+                        Default: 5
+
   LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_feature_median, loess_global_median).
                         Higher = smoother, more conservative correction.
                         Default: 0.75
@@ -171,19 +176,20 @@ MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods:
-#   "none"           — imputation only (no correction; baseline)
-#   "notame"         — per-batch cubic spline drift correction + RUV batch correction
-#   "pmp_qcrsc"      — QC-RSC spline drift correction (pmp package)
-#   "serrf"          — SERRF random forest correction (Fan et al. 2019)
-#   "batchcorr"      — cluster-based spline drift + between-batch normalisation (Brunius et al.)
-#   "combat_only"    — ComBat batch correction only (no drift correction)
-#   "loess_combat"   — per-batch LOESS drift correction + ComBat batch correction
-#   "cordbat_only"   — CordBat batch correction only (GGM-based, no drift correction)
-#   "loess_cordbat"  — per-batch LOESS drift correction + CordBat batch correction
-#   "waveica"        — WaveICA 2.0 wavelet-based correction
+#   "none"                — imputation only (no correction; baseline)
+#   "notame"              — per-batch cubic spline drift correction + RUV batch correction
+#   "pmp_qcrsc"           — QC-RSC spline drift correction (pmp package)
+#   "serrf"               — SERRF random forest correction (Fan et al. 2019)
+#   "batchcorr"           — cluster-based spline drift + between-batch normalisation (Brunius et al.)
+#   "combat_only"         — ComBat batch correction only (no drift correction)
+#   "loess_combat"        — per-batch LOESS drift correction + ComBat batch correction
+#   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
+#   "loess_cordbat"       — per-batch LOESS drift correction + CordBat batch correction
+#   "waveica"             — WaveICA 2.0 wavelet-based correction
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
+SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
@@ -436,6 +442,7 @@ writeLines(c(
   paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
   paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
   paste("RUV_K:                  ", RUV_K),
+  paste("SERRF_NUM:              ", SERRF_NUM),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
   paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
   paste("CORDBAT_REF_BATCH:      ", if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH),
@@ -505,10 +512,18 @@ for (method in CORRECTION_METHODS) {
       none         = correct_none(data),
       notame       = correct_notame(data, RUV_K),
       pmp_qcrsc    = correct_pmp_qcrsc(data),
-      serrf        = correct_serrf(data),
+      serrf        = {
+        # Cap SERRF_NUM at half the smallest per-batch QC count to avoid overfitting
+        min_qc_per_batch <- min(table(colData(data)$Batch[colData(data)$QC == "QC"]))
+        serrf_num_eff    <- max(1L, min(SERRF_NUM, floor(min_qc_per_batch / 2L)))
+        if (serrf_num_eff < SERRF_NUM)
+          message("==> SERRF: reducing num from ", SERRF_NUM, " to ", serrf_num_eff,
+                  " (min QC per batch = ", min_qc_per_batch, ")")
+        correct_serrf(data, num = serrf_num_eff)
+      },
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
-      loess_combat  = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_combat        = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_ltqc_median    = correct_loess_ltqc_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),

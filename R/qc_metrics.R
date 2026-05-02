@@ -253,6 +253,62 @@ eval_remaining_drift <- function(se) {
 }
 
 
+# Test whether pooled QC samples form a single homogeneous population after
+# correction, using PERMANOVA (centroid) and PERMDISP (dispersion) from vegan.
+# Requires vegan; returns NAs silently if not installed or fewer than 2 batches.
+#
+#   qc_permanova_r2  — R²(Batch) from PERMANOVA on QC samples; lower = better
+#   qc_permanova_p   — p-value; want > 0.05 (QC centroids don't differ by batch)
+#   qc_permdisp_p    — p-value from PERMDISP; want > 0.05 (homogeneous spread)
+eval_qc_homogeneity <- function(se) {
+  na_out <- list(qc_permanova_r2 = NA_real_,
+                 qc_permanova_p  = NA_real_,
+                 qc_permdisp_p   = NA_real_)
+
+  qc_idx   <- which(colData(se)$QC == "QC")
+  if (length(qc_idx) < 4) return(na_out)
+  batch_qc <- as.character(colData(se)$Batch[qc_idx])
+  if (length(unique(batch_qc)) < 2 || any(table(batch_qc) < 2)) return(na_out)
+  if (!requireNamespace("vegan", quietly = TRUE)) return(na_out)
+
+  mat     <- assay(se, 1)[, qc_idx, drop = FALSE]
+  mat_log <- suppressWarnings(log2(mat))
+  mat_log[!is.finite(mat_log)] <- NA
+  for (j in seq_len(ncol(mat_log))) {
+    na_j <- !is.finite(mat_log[, j])
+    if (any(na_j)) mat_log[na_j, j] <- mean(mat_log[, j], na.rm = TRUE)
+  }
+  feat_var <- apply(mat_log, 1, var, na.rm = TRUE)
+  mat_log  <- mat_log[is.finite(feat_var) & feat_var > 0, , drop = FALSE]
+  if (nrow(mat_log) < 2) return(na_out)
+
+  d <- dist(t(mat_log))
+
+  pm <- tryCatch(
+    vegan::adonis2(d ~ Batch,
+                   data         = data.frame(Batch = batch_qc),
+                   permutations = 999, by = "margin"),
+    error = function(e) NULL
+  )
+  pm_df   <- if (!is.null(pm)) as.data.frame(pm) else NULL
+  p_col   <- if (!is.null(pm_df)) grep("Pr\\(>F\\)", colnames(pm_df), value = TRUE)[1] else NA
+  perm_r2 <- if (!is.null(pm_df)) round(pm_df["Batch", "R2"],     4) else NA_real_
+  perm_p  <- if (!is.null(pm_df) && !is.na(p_col))
+               round(pm_df["Batch", p_col], 4) else NA_real_
+
+  bd     <- tryCatch(vegan::betadisper(d, group = batch_qc), error = function(e) NULL)
+  disp_p <- if (!is.null(bd)) tryCatch({
+    pt  <- vegan::permutest(bd, permutations = 999)
+    pc  <- grep("Pr\\(>F\\)", colnames(pt$tab), value = TRUE)[1]
+    round(pt$tab[1, pc], 4)
+  }, error = function(e) NA_real_) else NA_real_
+
+  list(qc_permanova_r2 = perm_r2,
+       qc_permanova_p  = perm_p,
+       qc_permdisp_p   = disp_p)
+}
+
+
 # Save per-feature QC metrics and a one-row summary for one correction method.
 # Files are written to interdir so results from multiple methods can be compared.
 #
@@ -260,17 +316,18 @@ eval_remaining_drift <- function(se) {
 #   ltqc_median_RSD_r      — median robust RSD of held-out ltQC samples (unbiased)
 #   ltqc_median_D_ratio    — MAD(ltQC) / MAD(Sample); per-feature, unbiased
 #   ltqc_dist_ratio        — median pairwise dist(ltQC) / dist(Sample) in PCA space (unbiased)
-#   qc_dist_ratio          — median pairwise dist(QC) / dist(Sample) in PCA space (biased)
 #   RSD_r                  — robust RSD of pooled QC samples
 #   D_ratio_r              — MAD(QC) / MAD(Sample); lower = better separation
 #   median_sample_MAD      — median of per-feature MAD across biological samples
-#   signal_preservation_r  — median feature-wise Spearman cor vs raw uncorrected data
 #   within_batch_dist_r    — median Spearman cor of within-batch pairwise distances
 #                            (corrected vs raw); unaffected by between-batch structure
 #   remaining_batch_r2     — median R² of batch as factor on biological samples;
 #                            lower = less remaining batch effect
 #   remaining_drift_r      — median absolute Spearman cor of QC abundance with
 #                            injection order within batches; lower = less drift remaining
+#   qc_permanova_r2        — R²(Batch) from PERMANOVA on QC samples (lower = better)
+#   qc_permanova_p         — p-value; want > 0.05 (QC don't cluster by batch)
+#   qc_permdisp_p          — PERMDISP p-value; want > 0.05 (homogeneous QC spread)
 #
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
@@ -298,17 +355,20 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
     ltqc_median_RSD_r     = round(eval_ltqc(se,             mask = obs_mask), 4),
     ltqc_median_D_ratio   = round(eval_ltqc_dratio(se,      mask = obs_mask), 3),
     ltqc_dist_ratio       = round(eval_dist_ratio(se,        group1 = "ltQC"), 3),
-    qc_dist_ratio         = round(eval_dist_ratio(se,        group1 = "QC"),   3),
     median_RSD_r          = round(median(rsd),               3),
     median_D_ratio_r      = round(median(drat),              3),
     pct_RSD_lt_30         = round(100 * mean(rsd < 0.30),   1),
     median_sample_MAD     = round(median(sample_mads, na.rm = TRUE), 2),
-    signal_preservation_r = round(eval_signal_preservation(se, raw_ref), 3),
     within_batch_dist_r   = round(eval_within_batch_dist_preservation(se, raw_ref), 3),
     remaining_batch_r2    = round(eval_remaining_batch_r2(se), 3),
     remaining_drift_r     = round(eval_remaining_drift(se), 3),
     stringsAsFactors      = FALSE
   )
+
+  qc_homo <- eval_qc_homogeneity(se)
+  summary_row$qc_permanova_r2 <- qc_homo$qc_permanova_r2
+  summary_row$qc_permanova_p  <- qc_homo$qc_permanova_p
+  summary_row$qc_permdisp_p   <- qc_homo$qc_permdisp_p
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method, ".csv")), row.names = FALSE)
 

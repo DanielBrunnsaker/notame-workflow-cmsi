@@ -23,6 +23,7 @@ renv/python/
 mzml-quality-check.R
 normalization.R
 posthoc_qc_metrics.r
+plot_method_comparison.R
 
 # Docker
 *.tar

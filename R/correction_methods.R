@@ -659,6 +659,8 @@ correct_loess_cordbat <- function(data, loess_span, fallback_to_samples = FALSE,
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+
+
 correct_waveica <- function(data) {
   library(WaveICA2.0)
 
