@@ -571,6 +571,7 @@ for (method in CORRECTION_METHODS) {
 
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref)
+  report_batch_summary(combined, file = file.path(method_out, "batch_summary_post_correction.csv"))
 
   # Drop RUV W-factor columns from final output
   w_cols <- grep("^W_", colnames(colData(combined)), value = TRUE)
