@@ -413,16 +413,43 @@ correct_combat_only <- function(data) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# Print per-batch counts of non-positive (and NA) values for diagnostic purposes.
+# Call before and after QCRSC to identify which batches pmp is distorting.
+diag_nonpositive <- function(se, label = "") {
+  mat     <- assay(se, 1)
+  batches <- as.character(colData(se)$Batch)
+  counts  <- sapply(unique(batches), function(b) {
+    m <- mat[, batches == b, drop = FALSE]
+    sum(!is.finite(m) | m <= 0, na.rm = TRUE)
+  })
+  total <- sum(counts)
+  if (nchar(label) > 0) message("  [", label, "] non-positive values per batch:")
+  for (b in names(counts))
+    message("    Batch ", b, ": ", counts[b])
+  message("    Total: ", total)
+  invisible(counts)
+}
+
 correct_pmp_qcrsc <- function(data) {
   library(pmp)
 
   obs_mask <- !is.na(assay(data, 1))
+
+  # Identify batches pmp will not have QC anchors for (< 4 QC samples).
+  # minQC=4 excludes their QCs from spline fitting but pmp still extrapolates
+  # the global spline into those batches, producing wildly incorrect values.
+  # Save their original values and restore after QCRSC.
+  cd         <- as.data.frame(colData(data))
+  qc_counts  <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
+  skip_batches <- names(qc_counts[qc_counts < 4])
+  orig_mat   <- assay(data, 1)
 
   message("==> Drift correction + batch correction (pmp QC-RSC)")
   # QCRSC handles NAs natively — no LoD/2 before this step
   # ltQC remapped to "Sample" so pmp does not try to use it as a QC reference
   classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
 
+  diag_nonpositive(data, "before QC-RSC")
   combined <- QCRSC(
     df      = data,
     order   = colData(data)$Injection_order,
@@ -431,8 +458,15 @@ correct_pmp_qcrsc <- function(data) {
     spar    = 0,
     minQC   = 4
   )
+  diag_nonpositive(combined, "after QC-RSC")
 
-  combined <- clamp_nonpositive(combined, "after QC-RSC")
+  if (length(skip_batches) > 0) {
+    skip_idx <- which(as.character(colData(combined)$Batch) %in% skip_batches)
+    assay(combined, 1, withDimnames = FALSE)[, skip_idx] <- orig_mat[, skip_idx]
+    message("  Restored pre-correction values for batch(es) with <4 QCs: ",
+            paste(skip_batches, collapse = ", "))
+    diag_nonpositive(combined, "after restore")
+  }
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
@@ -446,12 +480,21 @@ correct_pmp_qcrsc_combat <- function(data) {
 
   obs_mask <- !is.na(assay(data, 1))
 
+  # Identify batches pmp will not have QC anchors for (< 4 QC samples).
+  # minQC=4 excludes their QCs from spline fitting but pmp still extrapolates
+  # the global spline into those batches, producing wildly incorrect values.
+  # Save their original values and restore after QCRSC; ComBat then aligns them.
+  cd           <- as.data.frame(colData(data))
+  qc_counts    <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
+  skip_batches <- names(qc_counts[qc_counts < 4])
+  orig_mat     <- assay(data, 1)
+
   # Step 1: QC-RSC — drift correction + between-batch alignment for batches
-  # with >= 4 QC samples. Batches below that threshold (e.g. a batch that ran
-  # out of QC samples) are left uncorrected by pmp and picked up by ComBat.
+  # with >= 4 QC samples.
   message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
   classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
 
+  diag_nonpositive(data, "before QC-RSC")
   combined <- QCRSC(
     df      = data,
     order   = colData(data)$Injection_order,
@@ -460,12 +503,19 @@ correct_pmp_qcrsc_combat <- function(data) {
     spar    = 0,
     minQC   = 4
   )
+  diag_nonpositive(combined, "after QC-RSC")
+
+  if (length(skip_batches) > 0) {
+    skip_idx <- which(as.character(colData(combined)$Batch) %in% skip_batches)
+    assay(combined, 1, withDimnames = FALSE)[, skip_idx] <- orig_mat[, skip_idx]
+    message("  Restored pre-correction values for batch(es) with <4 QCs: ",
+            paste(skip_batches, collapse = ", "))
+    diag_nonpositive(combined, "after restore")
+  }
 
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
-  combined <- clamp_nonpositive(combined, "after QC-RSC")
-
-  pre <- combined
+  pre      <- combined
 
   # Step 2: ComBat — removes any remaining between-batch offset, including
   # from batches pmp could not align (insufficient QCs). With randomised
