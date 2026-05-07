@@ -44,6 +44,26 @@ rf_impute_corrected <- function(se, obs_mask) {
   impute_rf(se, parallelize = "variables")
 }
 
+# Clamp non-positive and non-finite values in a SummarizedExperiment assay to
+# half the global minimum positive value. pmp's QC-RSC spline correction can
+# produce zeros or negatives when the QC spline overshoots; log2 and RF
+# imputation both require strictly positive input.
+clamp_nonpositive <- function(se, context = "") {
+  mat    <- assay(se, 1)
+  nonpos <- !is.finite(mat) | mat <= 0
+  if (any(nonpos, na.rm = TRUE)) {
+    floor_val <- min(mat[is.finite(mat) & mat > 0], na.rm = TRUE) / 2
+    mat[nonpos & !is.na(mat)] <- floor_val
+    assay(se, 1, withDimnames = FALSE) <- mat
+    n <- sum(nonpos & !is.na(mat))
+    if (n > 0)
+      message("  Note: ", n, " non-positive value(s)",
+              if (nchar(context) > 0) paste0(" ", context) else "",
+              " clamped to ", signif(floor_val, 3))
+  }
+  se
+}
+
 correct_none <- function(data) {
   message("==> No correction (imputation only)")
   obs_mask <- !is.na(assay(data, 1))
@@ -412,6 +432,8 @@ correct_pmp_qcrsc <- function(data) {
     minQC   = 4
   )
 
+  combined <- clamp_nonpositive(combined, "after QC-RSC")
+
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
 
@@ -441,21 +463,7 @@ correct_pmp_qcrsc_combat <- function(data) {
 
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
-
-  # pmp's spline correction can produce zero or negative values in edge cases
-  # (e.g. when the QC spline overshoots). log2(0) = -Inf breaks ComBat's
-  # convergence loop. Clamp any remaining non-positive values to half the
-  # global minimum positive value — same logic as LoD/2 but post-pmp.
-  mat_post_pmp <- assay(combined, 1)
-  nonpos       <- !is.finite(mat_post_pmp) | mat_post_pmp <= 0
-  if (any(nonpos)) {
-    floor_val <- min(mat_post_pmp[is.finite(mat_post_pmp) & mat_post_pmp > 0],
-                    na.rm = TRUE) / 2
-    mat_post_pmp[nonpos] <- floor_val
-    assay(combined, 1, withDimnames = FALSE) <- mat_post_pmp
-    message("  Note: ", sum(nonpos), " non-positive value(s) after QC-RSC clamped",
-            " to ", signif(floor_val, 3), " before log2 transform")
-  }
+  combined <- clamp_nonpositive(combined, "after QC-RSC")
 
   pre <- combined
 
