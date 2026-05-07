@@ -478,23 +478,21 @@ correct_pmp_qcrsc <- function(data) {
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
-correct_pmp_qcrsc_combat <- function(data) {
+correct_pmp_qcrsc_scale <- function(data) {
   library(pmp)
-  library(sva)
 
   obs_mask <- !is.na(assay(data, 1))
 
-  # Identify batches pmp will not have QC anchors for (< 4 QC samples).
-  # minQC=4 excludes their QCs from spline fitting but pmp still extrapolates
-  # the global spline into those batches, producing wildly incorrect values.
-  # Save their original values and restore after QCRSC; ComBat then aligns them.
+  # Identify batches pmp cannot anchor (< 4 QC samples).
+  # pmp's between-batch alignment step distorts these batches — save their
+  # original values and restore them after QCRSC runs.
   cd           <- as.data.frame(colData(data))
   qc_counts    <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
   skip_batches <- names(qc_counts[qc_counts < 4])
   orig_mat     <- assay(data, 1)
 
-  # Step 1: QC-RSC — drift correction + between-batch alignment for batches
-  # with >= 4 QC samples.
+  # Step 1: QC-RSC — drift correction + QC-anchored between-batch alignment
+  # for batches with >= 4 QC samples.
   message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
   classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
 
@@ -517,32 +515,40 @@ correct_pmp_qcrsc_combat <- function(data) {
     diag_nonpositive(combined, "after restore")
   }
 
-  # Clamp any non-positive values introduced by spline overshoot in corrected
-  # batches (small in number but would produce -Inf after log2, breaking ComBat)
+  # Clamp spline overshoot in corrected batches before any log step
   combined <- clamp_nonpositive(combined, "after QC-RSC")
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
   pre      <- combined
 
-  # Step 2: ComBat — removes any remaining between-batch offset, including
-  # from batches pmp could not align (insufficient QCs). With randomised
-  # sample injection order, ComBat's estimate from biological samples is valid.
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Between-batch correction skipped (only one batch detected)")
-  } else {
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+  # Step 2: Global median scaling — only for batches pmp could not align.
+  # Scales each no-QC batch by a single factor so its overall intensity level
+  # matches the grand median of the pmp-corrected batches. One scalar per batch:
+  # no feature-specific adjustments, no disturbance to already-corrected batches.
+  # Defensible when samples are randomised (global shift is technical, not biological).
+  if (length(skip_batches) > 0) {
+    mat          <- assay(combined, 1)
+    good_batches <- setdiff(unique(as.character(cd$Batch)), skip_batches)
+    good_samp    <- which(cd$QC == "Sample" & as.character(cd$Batch) %in% good_batches)
+    ref_vals     <- mat[, good_samp, drop = FALSE]
+    grand_med    <- median(ref_vals[is.finite(ref_vals) & ref_vals > 0], na.rm = TRUE)
 
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- ComBat(
-      dat   = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+    message("==> Global median scaling for batch(es) with <4 QCs")
+    for (b in skip_batches) {
+      b_samp <- which(cd$QC == "Sample" & as.character(cd$Batch) == b)
+      if (length(b_samp) < 2) {
+        message("  Batch ", b, ": skipped (fewer than 2 biological samples)"); next
+      }
+      b_vals    <- mat[, b_samp, drop = FALSE]
+      batch_med <- median(b_vals[is.finite(b_vals) & b_vals > 0], na.rm = TRUE)
+      if (!is.finite(batch_med) || batch_med <= 0) {
+        message("  Batch ", b, ": skipped (could not compute median)"); next
+      }
+      scale_fac <- grand_med / batch_med
+      b_all     <- which(as.character(cd$Batch) == b)
+      assay(combined, 1, withDimnames = FALSE)[, b_all] <-
+        assay(combined, 1)[, b_all] * scale_fac
+      message("  Batch ", b, ": scale factor = ", round(scale_fac, 4),
+              "  (batch median ", round(batch_med), " → grand median ", round(grand_med), ")")
+    }
   }
 
   message("==> Imputation (RF on corrected data)")

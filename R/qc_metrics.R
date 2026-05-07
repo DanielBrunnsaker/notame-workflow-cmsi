@@ -20,6 +20,70 @@ write_feature_info <- function(se, file) {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Batch quality summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Reports per-batch missingness and a single quality score for a quick
+# at-a-glance overview. Printed to the console and saved as a CSV.
+#
+# Quality score: median robust QC RSD (MAD/median) across all features with
+# >= 2 finite QC observations in the batch. Lower = more reproducible QC signal.
+# NA when a batch has fewer than 2 QC samples.
+#
+# Missingness: fraction of NA values in biological (Sample) cells for that batch.
+report_batch_summary <- function(se, file = NULL) {
+  mat     <- assay(se, 1)
+  cd      <- as.data.frame(colData(se))
+  batches <- unique(as.character(cd$Batch))
+
+  rows <- lapply(batches, function(b) {
+    b_idx  <- which(as.character(cd$Batch) == b)
+    b_mat  <- mat[, b_idx, drop = FALSE]
+    b_cd   <- cd[b_idx, ]
+
+    n_samples <- sum(b_cd$QC == "Sample")
+    n_qc      <- sum(b_cd$QC == "QC")
+    n_ltqc    <- sum(b_cd$QC == "ltQC")
+
+    samp_cols <- which(b_cd$QC == "Sample")
+    miss_pct  <- if (length(samp_cols) > 0)
+      round(mean(is.na(b_mat[, samp_cols, drop = FALSE])) * 100, 1)
+    else NA_real_
+
+    qc_cols  <- which(b_cd$QC == "QC")
+    med_rsd  <- if (length(qc_cols) >= 2) {
+      rsds <- apply(b_mat[, qc_cols, drop = FALSE], 1, function(x) {
+        x <- x[is.finite(x) & x > 0]
+        if (length(x) < 2) NA_real_ else mad(x) / median(x)
+      })
+      round(median(rsds, na.rm = TRUE) * 100, 1)
+    } else NA_real_
+
+    data.frame(
+      Batch             = b,
+      n_samples         = n_samples,
+      n_QC              = n_qc,
+      n_ltQC            = n_ltqc,
+      missingness_pct   = miss_pct,
+      median_QC_RSD_pct = med_rsd,
+      stringsAsFactors  = FALSE
+    )
+  })
+
+  out <- do.call(rbind, rows)
+
+  cat("\n--- Batch quality summary ---\n")
+  print(out, row.names = FALSE)
+
+  if (!is.null(file)) {
+    write.csv(out, file, row.names = FALSE)
+    message("  Saved: ", basename(file))
+  }
+
+  invisible(out)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # QC evaluation utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
