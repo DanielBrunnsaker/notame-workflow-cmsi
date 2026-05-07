@@ -418,6 +418,57 @@ correct_pmp_qcrsc <- function(data) {
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
+correct_pmp_qcrsc_combat <- function(data) {
+  library(pmp)
+  library(sva)
+
+  obs_mask <- !is.na(assay(data, 1))
+
+  # Step 1: QC-RSC — drift correction + between-batch alignment for batches
+  # with >= 4 QC samples. Batches below that threshold (e.g. a batch that ran
+  # out of QC samples) are left uncorrected by pmp and picked up by ComBat.
+  message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
+  classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
+
+  combined <- QCRSC(
+    df      = data,
+    order   = colData(data)$Injection_order,
+    batch   = colData(data)$Batch,
+    classes = classes_for_pmp,
+    spar    = 0,
+    minQC   = 4
+  )
+
+  # LoD/2 fill before ComBat which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  # Step 2: ComBat — removes any remaining between-batch offset, including
+  # from batches pmp could not align (insufficient QCs). With randomised
+  # sample injection order, ComBat's estimate from biological samples is valid.
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Between-batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (ComBat)")
+    assay(combined, 1, withDimnames = FALSE) <- ComBat(
+      dat   = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 correct_batchcorr <- function(data,
                               G          = seq(5, 35, by = 10),
                               modelNames = c("VVV", "VVE", "VEV", "VEE", "VEI", "VVI", "VII"),

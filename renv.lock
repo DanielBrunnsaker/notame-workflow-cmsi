@@ -4697,6 +4697,12 @@
       "Maintainer": "Davis Vaughan <davis@posit.co>",
       "Repository": "RSPM"
     },
+    "vegan": {
+      "Package": "vegan",
+      "Version": "2.7-3",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "vipor": {
       "Package": "vipor",
       "Version": "0.4.7",

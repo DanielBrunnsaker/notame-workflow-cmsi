@@ -24,6 +24,7 @@ mzml-quality-check.R
 normalization.R
 posthoc_qc_metrics.r
 plot_method_comparison.R
+pairwise_analysis.R
 
 # Docker
 *.tar
@@ -35,3 +36,4 @@ Thumbs.db
 # others, if used
 .claude/
 .positai
+.aider*
