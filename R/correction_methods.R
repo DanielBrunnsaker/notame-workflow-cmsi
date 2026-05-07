@@ -468,6 +468,10 @@ correct_pmp_qcrsc <- function(data) {
     diag_nonpositive(combined, "after restore")
   }
 
+  # Clamp any non-positive values introduced by spline overshoot in corrected
+  # batches (small in number but would break RF imputation's internal log step)
+  combined <- clamp_nonpositive(combined, "after QC-RSC")
+
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
 
@@ -512,6 +516,10 @@ correct_pmp_qcrsc_combat <- function(data) {
             paste(skip_batches, collapse = ", "))
     diag_nonpositive(combined, "after restore")
   }
+
+  # Clamp any non-positive values introduced by spline overshoot in corrected
+  # batches (small in number but would produce -Inf after log2, breaking ComBat)
+  combined <- clamp_nonpositive(combined, "after QC-RSC")
 
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
