@@ -441,7 +441,23 @@ correct_pmp_qcrsc_combat <- function(data) {
 
   # LoD/2 fill before ComBat which requires a complete matrix
   combined <- lod2_impute(combined)
-  pre      <- combined
+
+  # pmp's spline correction can produce zero or negative values in edge cases
+  # (e.g. when the QC spline overshoots). log2(0) = -Inf breaks ComBat's
+  # convergence loop. Clamp any remaining non-positive values to half the
+  # global minimum positive value — same logic as LoD/2 but post-pmp.
+  mat_post_pmp <- assay(combined, 1)
+  nonpos       <- !is.finite(mat_post_pmp) | mat_post_pmp <= 0
+  if (any(nonpos)) {
+    floor_val <- min(mat_post_pmp[is.finite(mat_post_pmp) & mat_post_pmp > 0],
+                    na.rm = TRUE) / 2
+    mat_post_pmp[nonpos] <- floor_val
+    assay(combined, 1, withDimnames = FALSE) <- mat_post_pmp
+    message("  Note: ", sum(nonpos), " non-positive value(s) after QC-RSC clamped",
+            " to ", signif(floor_val, 3), " before log2 transform")
+  }
+
+  pre <- combined
 
   # Step 2: ComBat — removes any remaining between-batch offset, including
   # from batches pmp could not align (insufficient QCs). With randomised
