@@ -52,7 +52,7 @@ Environment variables (required variables are marked; all others are optional wi
   CORRECTION_METHODS    Comma-separated list of correction methods to run.
                         Each method is saved to its own output subfolder.
                         Default: none,notame
-                        Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | serrf |
+                        Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
                                  batchcorr | combat_only | loess_combat | loess_limma |
                                  loess_ltqc_median | loess_feature_median | loess_global_median |
                                  cordbat_only | loess_cordbat | waveica
@@ -179,8 +179,10 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "none"                — imputation only (no correction; baseline)
 #   "notame"              — per-batch cubic spline drift correction + RUV batch correction
 #   "pmp_qcrsc"           — QC-RSC spline drift correction (pmp package)
-#   "pmp_qcrsc_scale"     — QC-RSC drift correction (pmp) + global median scaling for any
-#                           batch with <4 QCs; leaves pmp-corrected batches untouched
+#   "pmp_qcrsc_scale"         — QC-RSC drift correction (pmp) + global median scaling for any
+#                               batch with <4 QCs; leaves pmp-corrected batches untouched
+#   "pmp_qcrsc_feature_scale" — as pmp_qcrsc_scale but uses per-feature median scaling for
+#                               no-QC batches, consistent with pmp's own feature-wise alignment
 #   "serrf"               — SERRF random forest correction (Fan et al. 2019)
 #   "batchcorr"           — cluster-based spline drift + between-batch normalisation (Brunius et al.)
 #   "combat_only"         — ComBat batch correction only (no drift correction)
@@ -516,7 +518,8 @@ for (method in CORRECTION_METHODS) {
       none         = correct_none(data),
       notame       = correct_notame(data, RUV_K),
       pmp_qcrsc         = correct_pmp_qcrsc(data),
-      pmp_qcrsc_scale   = correct_pmp_qcrsc_scale(data),
+      pmp_qcrsc_scale         = correct_pmp_qcrsc_scale(data),
+      pmp_qcrsc_feature_scale = correct_pmp_qcrsc_feature_scale(data),
       serrf        = {
         # Cap SERRF_NUM at half the smallest per-batch QC count to avoid overfitting
         min_qc_per_batch <- min(table(colData(data)$Batch[colData(data)$QC == "QC"]))
@@ -536,7 +539,7 @@ for (method in CORRECTION_METHODS) {
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
       loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_ltqc_median, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_ltqc_median, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))

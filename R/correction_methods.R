@@ -557,6 +557,97 @@ correct_pmp_qcrsc_scale <- function(data) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# Per-feature median scaling variant of pmp_qcrsc_scale.
+# Identical to pmp_qcrsc_scale except that between-batch alignment for no-QC
+# batches is done per feature (each feature scaled to the grand median of that
+# feature across QC-corrected batches) rather than with a single global scalar.
+# This is consistent with how pmp QC-RSC aligns QC-anchored batches, where each
+# feature is referenced to its own global QC median. The only methodological
+# difference from the fully corrected batches is that within-batch drift
+# correction is skipped (no QC samples to anchor the spline).
+correct_pmp_qcrsc_feature_scale <- function(data) {
+  library(pmp)
+
+  obs_mask <- !is.na(assay(data, 1))
+
+  cd           <- as.data.frame(colData(data))
+  qc_counts    <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
+  skip_batches <- names(qc_counts[qc_counts < 4])
+  orig_mat     <- assay(data, 1)
+
+  message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
+  classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
+
+  diag_nonpositive(data, "before QC-RSC")
+  combined <- QCRSC(
+    df      = data,
+    order   = colData(data)$Injection_order,
+    batch   = colData(data)$Batch,
+    classes = classes_for_pmp,
+    spar    = 0,
+    minQC   = 4
+  )
+  diag_nonpositive(combined, "after QC-RSC")
+
+  if (length(skip_batches) > 0) {
+    skip_idx <- which(as.character(colData(combined)$Batch) %in% skip_batches)
+    assay(combined, 1, withDimnames = FALSE)[, skip_idx] <- orig_mat[, skip_idx]
+    message("  Restored pre-correction values for batch(es) with <4 QCs: ",
+            paste(skip_batches, collapse = ", "))
+    diag_nonpositive(combined, "after restore")
+  }
+
+  combined <- clamp_nonpositive(combined, "after QC-RSC")
+  pre      <- combined
+
+  # Per-feature median scaling for no-QC batches.
+  # For each feature, compute its median across biological samples in the
+  # QC-corrected batches and scale the no-QC batch to match.
+  # Consistent with pmp's own feature-wise QC-median referencing.
+  if (length(skip_batches) > 0) {
+    mat          <- assay(combined, 1)
+    good_batches <- setdiff(unique(as.character(cd$Batch)), skip_batches)
+    good_samp    <- which(cd$QC == "Sample" & as.character(cd$Batch) %in% good_batches)
+
+    # Per-feature reference median from QC-corrected batches
+    ref_medians <- apply(mat[, good_samp, drop = FALSE], 1, function(x) {
+      x <- x[is.finite(x) & x > 0]
+      if (length(x) < 2) NA_real_ else median(x)
+    })
+
+    message("==> Per-feature median scaling for batch(es) with <4 QCs")
+    for (b in skip_batches) {
+      b_samp <- which(cd$QC == "Sample" & as.character(cd$Batch) == b)
+      if (length(b_samp) < 2) {
+        message("  Batch ", b, ": skipped (fewer than 2 biological samples)"); next
+      }
+
+      batch_medians <- apply(mat[, b_samp, drop = FALSE], 1, function(x) {
+        x <- x[is.finite(x) & x > 0]
+        if (length(x) < 2) NA_real_ else median(x)
+      })
+
+      scale_facs <- ref_medians / batch_medians
+      # Features where scaling cannot be computed keep their original values
+      scale_facs[!is.finite(scale_facs) | scale_facs <= 0] <- 1
+
+      b_all <- which(as.character(cd$Batch) == b)
+      mat[, b_all] <- mat[, b_all] * scale_facs
+      assay(combined, 1, withDimnames = FALSE) <- mat
+
+      n_scaled <- sum(scale_facs != 1)
+      message("  Batch ", b, ": per-feature scaling applied to ", n_scaled, "/",
+              nrow(mat), " features  (median scale factor = ",
+              round(median(scale_facs[scale_facs != 1]), 4), ")")
+    }
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 correct_batchcorr <- function(data,
                               G          = seq(5, 35, by = 10),
                               modelNames = c("VVV", "VVE", "VEV", "VEE", "VEI", "VVI", "VII"),
