@@ -32,11 +32,11 @@ check_numeric <- function(problems, name, value, min = NULL, max = NULL, allow_n
 run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
                                   correction_methods, normalization,
                                   qc_detection_limit, sample_detection_limit,
-                                  fill_filter, low_int_filter_frac, low_int_percentile,
+                                  low_int_filter_frac, low_int_percentile,
                                   min_qc_sample_detection, min_batch_detection,
                                   rsd_threshold, ruv_k, serrf_num, loess_span,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
-                                  loess_fallback_to_samples, save_pre_correction_plots) {
+                                  save_pre_correction_plots) {
   problems <- character(0)
 
   # Input/output paths
@@ -73,7 +73,6 @@ run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
   # Numeric parameters: required fractions (0-1)
   problems <- check_numeric(problems, "QC_DETECTION_LIMIT",      qc_detection_limit,      min = 0, max = 1)
   problems <- check_numeric(problems, "SAMPLE_DETECTION_LIMIT",  sample_detection_limit,  min = 0, max = 1)
-  problems <- check_numeric(problems, "FILL_FILTER",             fill_filter,             min = 0, max = 1)
   problems <- check_numeric(problems, "LOW_INT_FILTER_FRAC",     low_int_filter_frac,     min = 0, max = 1)
   problems <- check_numeric(problems, "LOW_INT_PERCENTILE",      low_int_percentile,      min = 0, max = 1)
   problems <- check_numeric(problems, "MIN_QC_SAMPLE_DETECTION", min_qc_sample_detection, min = 0, max = 1)
@@ -91,7 +90,6 @@ run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
   problems <- check_numeric(problems, "QC_RSD_FILTER",  qc_rsd_filter,  min = 0, max = 1,   allow_na = TRUE)
 
   # Logical parameters
-  if (is.na(loess_fallback_to_samples)) problems <- c(problems, "LOESS_FALLBACK_TO_SAMPLES must be TRUE or FALSE")
   if (is.na(save_pre_correction_plots)) problems <- c(problems, "SAVE_PRE_CORRECTION_PLOTS must be TRUE or FALSE")
 
   if (length(problems) > 0) {

@@ -86,7 +86,6 @@ Rscript notame-workflow.r --help
 | `CORRECTION_METHODS` | No | `none,notame` | Comma-separated list of methods to run (see below) |
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
-| `FILL_FILTER` | No | `0.10` | Min MSDIAL Fill % (alignment confidence, 0–1) |
 | `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC sample for it to be used as reference. QC samples below this are removed before processing (e.g. empty injections) |
 | `MIN_BATCH_DETECTION` | No | `1` | Min number of detections a feature must have in every batch. Features absent from any entire batch are removed (set to `0` to disable) |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD (robust: MAD/median); feature must pass in ≥ 50% of batches. Set to e.g. `0.80` to enable |
@@ -97,7 +96,6 @@ Rscript notame-workflow.r --help
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
 | `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat`, `loess_limma`, `loess_feature_median`, `loess_global_median`). Higher = smoother, more conservative |
-| `LOESS_FALLBACK_TO_SAMPLES` | No | `FALSE` | If `TRUE`, fall back to fitting LOESS through biological samples when a batch has insufficient QC observations. Only valid when samples are in randomised injection order |
 | `CORDBAT_REF_BATCH` | No | auto | Reference batch ID for CordBat methods. All other batches are corrected onto this batch. Defaults to auto-selecting the batch with the lowest median feature RSD |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
@@ -166,12 +164,11 @@ Applied before correction, in order:
 
 1. Blank filter — removes features where sample signal ≤ `BLANK_RATIO` × blank signal (SolvBlank samples only; disabled by default)
 2. Low-intensity filter — removes features whose p80 intensity is below `LOW_INT_FILTER_FRAC` × mean p80 across all features (or below `LOW_INT_FILTER` if set)
-3. Fill % filter — removes features with MSDIAL alignment confidence below `FILL_FILTER`
-4. QC sample quality check — removes individual QC samples with feature detection rate below `MIN_QC_SAMPLE_DETECTION` (e.g. empty injections, failed runs)
-5. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
-6. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
-7. Zero variance — removes features with no variation across samples
-8. QC-RSD filter — removes features with QC robust RSD (MAD/median) > `QC_RSD_FILTER` in ≥ 50% of batches (disabled by default)
+3. QC sample quality check — removes individual QC samples with feature detection rate below `MIN_QC_SAMPLE_DETECTION` (e.g. empty injections, failed runs)
+4. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
+5. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
+6. Zero variance — removes features with no variation across samples
+7. QC-RSD filter — removes features with QC robust RSD (MAD/median) > `QC_RSD_FILTER` in ≥ 50% of batches (disabled by default)
 
 ## Sample types
 

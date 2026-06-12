@@ -101,14 +101,14 @@ correct_notame <- function(data, ruv_k) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_combat <- function(data, loess_span) {
   library(sva)
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+      loess_correct_batch(se_b, span = loess_span)
     }),
     merge = "samples"
   )
@@ -143,13 +143,13 @@ correct_loess_combat <- function(data, loess_span, fallback_to_samples = FALSE) 
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_feature_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_feature_median <- function(data, loess_span) {
 
   # LOESS handles NAs natively — no LoD/2 needed before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+      loess_correct_batch(se_b, span = loess_span)
     }),
     merge = "samples"
   )
@@ -171,13 +171,13 @@ correct_loess_feature_median <- function(data, loess_span, fallback_to_samples =
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_global_median <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_global_median <- function(data, loess_span) {
 
   # LOESS handles NAs natively — no LoD/2 needed before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+      loess_correct_batch(se_b, span = loess_span)
     }),
     merge = "samples"
   )
@@ -283,14 +283,14 @@ batch_global_median_correct <- function(se) {
   se
 }
 
-correct_loess_limma <- function(data, loess_span, fallback_to_samples = FALSE) {
+correct_loess_limma <- function(data, loess_span) {
   library(limma)
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+      loess_correct_batch(se_b, span = loess_span)
     }),
     merge = "samples"
   )
@@ -794,13 +794,12 @@ correct_cordbat_only <- function(data, ref_batch = NULL) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_cordbat <- function(data, loess_span, fallback_to_samples = FALSE,
-                                  ref_batch = NULL) {
+correct_loess_cordbat <- function(data, loess_span, ref_batch = NULL) {
   # LOESS handles NAs natively — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span, fallback_to_samples = fallback_to_samples)
+      loess_correct_batch(se_b, span = loess_span)
     }),
     merge = "samples"
   )

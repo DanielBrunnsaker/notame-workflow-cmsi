@@ -73,10 +73,6 @@ Environment variables (required variables are marked; all others are optional wi
                         Set to 'none' to disable.
                         Default: none
 
-  FILL_FILTER           Min MSDIAL Fill % (post-gap-filling detection rate, 0-1).
-                        Features below this threshold are removed.
-                        Default: 0.10
-
   LOW_INT_FILTER_FRAC   Data-driven low-intensity filter. Removes features whose p80
                         intensity is below this fraction of the mean p80 across all features.
                         Ignored if LOW_INT_FILTER is set.
@@ -119,11 +115,6 @@ Environment variables (required variables are marked; all others are optional wi
   LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_feature_median, loess_global_median).
                         Higher = smoother, more conservative correction.
                         Default: 0.75
-
-  LOESS_FALLBACK_TO_SAMPLES  If TRUE, fall back to fitting LOESS through all samples when a
-                        batch has fewer than 4 finite QC observations. Only appropriate when
-                        samples are in randomised injection order.
-                        Default: FALSE
 
   CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
                         All other batches are corrected onto this batch.
@@ -174,7 +165,6 @@ BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip", "")) NA_real_ else
 LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))
 LOW_INT_FILTER_FRAC <- as.numeric(get_env("LOW_INT_FILTER_FRAC", "0.10"))
 LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
-FILL_FILTER         <- as.numeric(get_env("FILL_FILTER",         "0.10"))
 qc_rsd_env    <- Sys.getenv("QC_RSD_FILTER", unset = "")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
@@ -201,7 +191,6 @@ CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ","
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
-LOESS_FALLBACK_TO_SAMPLES <- as.logical(get_env("LOESS_FALLBACK_TO_SAMPLES", "FALSE"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
@@ -216,11 +205,11 @@ run_preflight_checks(
   in_xlsx = in_xlsx, project_folder = project_folder, column = column, polarity = polarity,
   correction_methods = CORRECTION_METHODS, normalization = NORMALIZATION,
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
-  fill_filter = FILL_FILTER, low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
+  low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
-  loess_fallback_to_samples = LOESS_FALLBACK_TO_SAMPLES, save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS
+  save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -349,16 +338,6 @@ data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "
 }
 n_after_lowint <- nrow(data)
 
-# Fill % filter: remove features with low MSDIAL alignment confidence
-fill_pct <- as.numeric(rowData(data)$Fill_pct)
-if (all(is.na(fill_pct))) {
-  message("WARNING: Fill_pct not available — skipping fill filter")
-  n_after_fill <- n_after_lowint
-} else {
-  data <- data[is.na(fill_pct) | fill_pct >= FILL_FILTER, ]
-  n_after_fill <- nrow(data)
-}
-
 # Remove QC samples with insufficient feature detection (empty injections, failed runs)
 # Runs after feature filters so detection rate is assessed on meaningful features only
 {
@@ -440,7 +419,6 @@ filter_log <- data.frame(
       sprintf("Low-intensity filter (p%.0f >= %.4g)", LOW_INT_PERCENTILE * 100, low_int_cutoff)
     else
       "Low-intensity filter (disabled)",
-    sprintf("Fill filter (>= %.2g)", FILL_FILTER),
     sprintf("QC detection (>= %.0f%%)", QC_DETECTION_LIMIT * 100),
     sprintf("Sample detection (>= %.0f%%)", SAMPLE_DETECTION_LIMIT * 100),
     "Zero variance",
@@ -450,15 +428,14 @@ filter_log <- data.frame(
   features_removed = c(
     n_before          - n_after_blank,
     n_after_blank     - n_after_lowint,
-    n_after_lowint    - n_after_fill,
-    n_after_fill      - n_after_qc,
+    n_after_lowint    - n_after_qc,
     n_after_qc        - n_after_sample,
     n_after_sample    - n_after_zerovar,
     n_after_zerovar   - n_after_batchdet,
     n_after_batchdet  - n_after_qcrsd
   ),
   features_remaining = c(
-    n_after_blank, n_after_lowint, n_after_fill,
+    n_after_blank, n_after_lowint,
     n_after_qc, n_after_sample, n_after_zerovar, n_after_batchdet, n_after_qcrsd
   )
 )
@@ -482,7 +459,6 @@ writeLines(c(
   paste("LOW_INT_FILTER_FRAC:    ", LOW_INT_FILTER_FRAC),
   paste("LOW_INT_PERCENTILE:     ", LOW_INT_PERCENTILE),
   paste("LOW_INT_CUTOFF:         ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
-  paste("FILL_FILTER:            ", FILL_FILTER),
   paste("MIN_QC_SAMPLE_DETECTION: ", MIN_QC_SAMPLE_DETECTION),
   paste("MIN_BATCH_DETECTION:    ", MIN_BATCH_DETECTION),
   paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
@@ -490,7 +466,6 @@ writeLines(c(
   paste("RUV_K:                  ", RUV_K),
   paste("SERRF_NUM:              ", SERRF_NUM),
   paste("LOESS_SPAN:             ", LOESS_SPAN),
-  paste("LOESS_FALLBACK_TO_SAMPLES: ", LOESS_FALLBACK_TO_SAMPLES),
   paste("CORDBAT_REF_BATCH:      ", if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH),
   paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
 ), file.path(interdir, "run_parameters.txt"))
@@ -571,12 +546,12 @@ for (method in CORRECTION_METHODS) {
       },
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
-      loess_combat        = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_limma   = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_global_median  = correct_loess_global_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
+      loess_combat        = correct_loess_combat(data, LOESS_SPAN),
+      loess_limma   = correct_loess_limma(data, LOESS_SPAN),
+      loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
+      loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
-      loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, CORDBAT_REF_BATCH),
+      loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
       stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
