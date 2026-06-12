@@ -4,7 +4,6 @@
 # split_by_batch()       — splits a SE into a list of per-batch SEs, sorted by injection order
 # process_batch()        — notame cubic spline drift correction wrapper
 # loess_correct_batch()  — QC-based LOESS drift correction with optional sample fallback
-# linear_correct_batch() — QC-based linear drift correction
 
 split_by_batch <- function(se) {
   batches <- unique(colData(se)$Batch)
@@ -103,36 +102,6 @@ loess_correct_batch <- function(se_b, span = 0.75, fallback_to_samples = FALSE) 
   if (n_fallback > 0)
     message("  WARNING: Batch ", batch, " used sample-based LOESS fallback for ", n_fallback,
             " features. Only valid if injection order is randomised.")
-
-  assay(se_b, 1, withDimnames = FALSE) <- mat
-  se_b
-}
-
-
-# Linear within-batch drift correction.
-# Fits lm(abundance ~ injection_order) through QC samples per batch.
-# Requires >= 2 finite QC observations per feature.
-linear_correct_batch <- function(se_b) {
-  mat    <- assay(se_b, 1)
-  cd     <- colData(se_b)
-  qc_idx <- which(cd$QC == "QC")
-  inj    <- as.numeric(cd$Injection_order)
-
-  for (i in seq_len(nrow(mat))) {
-    y_qc <- as.numeric(mat[i, qc_idx])
-    x_qc <- inj[qc_idx]
-    ok   <- is.finite(y_qc)
-    if (sum(ok) < 2) next
-
-    tryCatch({
-      fit    <- lm(y ~ x, data = data.frame(x = x_qc[ok], y = y_qc[ok]))
-      pred   <- predict(fit, newdata = data.frame(x = inj))
-      med_qc <- median(y_qc[ok])
-      ratio  <- pred / med_qc
-      ratio[!is.finite(ratio) | ratio <= 0] <- 1
-      mat[i, ] <- mat[i, ] / ratio
-    }, error = function(e) NULL)
-  }
 
   assay(se_b, 1, withDimnames = FALSE) <- mat
   se_b

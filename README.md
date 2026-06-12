@@ -80,6 +80,7 @@ Rscript notame-workflow.r --help
 |---|---|---|---|
 | `IN_XLSX` | Yes | — | Path to MSDIAL alignment export (.xlsx) |
 | `PROJECT_FOLDER` | Yes | — | Root output directory |
+| `FORCE_RECONVERT` | No | `FALSE` | Force re-running the MSDIAL conversion step even if a cached result from a previous run is found |
 | `COLUMN` | Yes | — | Chromatographic column type (e.g. `RP`, `HILIC`) |
 | `POLARITY` | Yes | — | Ionisation polarity (`POS` / `NEG`) |
 | `CORRECTION_METHODS` | No | `none,notame` | Comma-separated list of methods to run (see below) |
@@ -152,6 +153,7 @@ output/
 intermediates/
   {COLUMN}_{POLARITY}/
     notame_rev.xlsx                 # notame-formatted intermediate
+    msdial_annotations.rds          # cached MSDIAL conversion result (mode + annotations)
     prefilter_log.csv               # feature counts after each filter step
     run_parameters.txt              # all parameter values used
 ```

@@ -13,6 +13,7 @@ library(notameStats)
 library(openxlsx)
 library(doParallel)
 
+source("R/preflight.R")
 source("R/msdial_to_notame.R")
 source("R/qc_metrics.R")
 source("R/drift_correction.R")
@@ -42,6 +43,11 @@ Environment variables (required variables are marked; all others are optional wi
 
   PROJECT_FOLDER        Root output directory (intermediates/ and output/ written here). Required.
 
+  FORCE_RECONVERT       Force re-running the MSDIAL conversion step even if a cached
+                        notame-formatted file from a previous run is found.
+                        Default: FALSE
+                        Values:  TRUE | FALSE
+
   COLUMN                Chromatographic column type. Required. Used together with POLARITY
                         to namespace output folders (e.g. RP_POS, HILIC_NEG).
                         Examples: RP | HILIC
@@ -54,7 +60,7 @@ Environment variables (required variables are marked; all others are optional wi
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
                                  batchcorr | combat_only | loess_combat | loess_limma |
-                                 loess_ltqc_median | loess_feature_median | loess_global_median |
+                                 loess_feature_median | loess_global_median |
                                  cordbat_only | loess_cordbat | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
@@ -200,6 +206,22 @@ cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
+FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PREFLIGHT CHECKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+run_preflight_checks(
+  in_xlsx = in_xlsx, project_folder = project_folder, column = column, polarity = polarity,
+  correction_methods = CORRECTION_METHODS, normalization = NORMALIZATION,
+  qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
+  fill_filter = FILL_FILTER, low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
+  min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
+  rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
+  blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
+  loess_fallback_to_samples = LOESS_FALLBACK_TO_SAMPLES, save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -247,7 +269,25 @@ write_annotations <- function(se, annot_df, file) {
 
 dir.create(interdir, showWarnings = FALSE, recursive = TRUE)
 
-msdial_result      <- msdial_to_notame(in_xlsx, out_xlsx)
+# Cache the MSDIAL conversion: re-parsing the alignment export is one of the
+# slower steps and only needs to be redone when IN_XLSX changes. The
+# annotations table (returned in memory, not part of out_xlsx) is cached
+# alongside it so a cache hit can skip msdial_to_notame() entirely.
+annotations_rds <- file.path(interdir, "msdial_annotations.rds")
+cache_valid <- !FORCE_RECONVERT &&
+  file.exists(out_xlsx) && file.exists(annotations_rds) &&
+  file.mtime(out_xlsx)       >= file.mtime(in_xlsx) &&
+  file.mtime(annotations_rds) >= file.mtime(in_xlsx)
+
+if (cache_valid) {
+  message("==> Using cached MSDIAL conversion: ", out_xlsx,
+          " (set FORCE_RECONVERT=TRUE to re-run)")
+  msdial_result <- readRDS(annotations_rds)
+} else {
+  msdial_result <- msdial_to_notame(in_xlsx, out_xlsx)
+  saveRDS(msdial_result, annotations_rds)
+}
+
 mode_name          <- msdial_result$mode
 msdial_annotations <- msdial_result$annotations
 
@@ -533,13 +573,12 @@ for (method in CORRECTION_METHODS) {
       combat_only  = correct_combat_only(data),
       loess_combat        = correct_loess_combat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
-      loess_ltqc_median    = correct_loess_ltqc_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
       loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, LOESS_FALLBACK_TO_SAMPLES, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_ltqc_median, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
