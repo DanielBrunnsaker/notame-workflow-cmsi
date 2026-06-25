@@ -95,28 +95,33 @@ Rscript notame-workflow.r --help
 | `LOW_INT_PERCENTILE` | No | `0.80` | Percentile used for the low-intensity filter |
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
-| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for drift correction (`loess_combat`, `loess_limma`, `loess_feature_median`, `loess_global_median`). Higher = smoother, more conservative |
+| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for QC-based drift correction (`loess_combat`, `loess_limma`, `loess_feature_median`, `loess_global_median`). Higher = smoother, more conservative |
+| `LOESS_SAMPLE_SPAN` | No | `0.9` | LOESS smoothing span for QC-free drift correction (`loess_samples_combat`), fit on biological samples instead of QC. Wider than `LOESS_SPAN` by default since sample points are far noisier |
+| `LOESS_SAMPLE_MIN_OBS` | No | `10` | Min finite sample observations per feature required to attempt QC-free drift correction (`loess_samples_combat`). Higher than the QC-based fit's threshold of 4 |
 | `CORDBAT_REF_BATCH` | No | auto | Reference batch ID for CordBat methods. All other batches are corrected onto this batch. Defaults to auto-selecting the batch with the lowest median feature RSD |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
 
 ## Correction methods
 
-| Method | Description |
-|---|---|
-| `none` | Imputation only (no correction; baseline) |
-| `notame` | Per-batch cubic spline drift correction followed by RUV-S batch correction using pooled QC samples. Batch correction is skipped when only one batch is present. Described in the original notame [paper](https://www.mdpi.com/2218-1989/10/4/135). |
-| `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift. |
-| `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). |
-| `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). |
-| `combat_only` | ComBat batch correction only (no drift correction). |
-| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. |
-| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Appropriate when QC data is partially compromised. |
-| `loess_feature_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation. Scales each batch so its biological sample median per feature matches the grand median. More flexible than global scaling but noisier for sparse features. QC-independent. |
-| `loess_global_median` | Per-batch LOESS drift correction (QC-based) followed by global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. |
-| `cordbat_only` | CordBat batch correction only (no drift correction). Uses a Gaussian Graphical Model built from correlated feature communities to learn per-feature scale and offset parameters. Requires a reference batch (auto-selected by default). |
-| `loess_cordbat` | Per-batch LOESS drift correction (QC-based) followed by CordBat batch correction. QC-independent for batch correction. Requires a reference batch (auto-selected by default). |
-| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). |
+| Method | Description | Parameters |
+|---|---|---|
+| `none` | Imputation only (no correction; baseline) | — |
+| `notame` | Per-batch cubic spline drift correction followed by RUV-S batch correction using pooled QC samples. Batch correction is skipped when only one batch is present. Described in the original notame [paper](https://www.mdpi.com/2218-1989/10/4/135). | `RUV_K` |
+| `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift. | — |
+| `pmp_qcrsc_scale` | As `pmp_qcrsc`, plus global median scaling for any batch with fewer than 4 QC samples (which pmp cannot spline-correct); pmp-corrected batches are left untouched. | — |
+| `pmp_qcrsc_feature_scale` | As `pmp_qcrsc_scale`, but uses per-feature median scaling for the no-QC batches instead of a single global factor, consistent with pmp's own feature-wise alignment. | — |
+| `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). | `SERRF_NUM` |
+| `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). | — |
+| `combat_only` | ComBat batch correction only (no drift correction). | — |
+| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. | `LOESS_SPAN` |
+| `loess_samples_combat` | Per-batch LOESS drift correction (QC-free — fit on biological samples instead of QC) followed by ComBat batch correction. For use when QC samples are unusable (degraded, missing, or insufficient). Uses a robust fit (`family = "symmetric"`) and a wider span than the QC-based variant to guard against fitting individual-sample noise as drift, plus a higher minimum-observation threshold per feature. Relies on sample injection order being randomised with respect to any biological grouping — without that, the fitted trend can be confounded with real biological signal. | `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS` |
+| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Appropriate when QC data is partially compromised. | `LOESS_SPAN` |
+| `loess_feature_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation. Scales each batch so its biological sample median per feature matches the grand median. More flexible than global scaling but noisier for sparse features. QC-independent. | `LOESS_SPAN` |
+| `loess_global_median` | Per-batch LOESS drift correction (QC-based) followed by global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. | `LOESS_SPAN` |
+| `cordbat_only` | CordBat batch correction only (no drift correction). Uses a Gaussian Graphical Model built from correlated feature communities to learn per-feature scale and offset parameters. Requires a reference batch (auto-selected by default). | `CORDBAT_REF_BATCH` |
+| `loess_cordbat` | Per-batch LOESS drift correction (QC-based) followed by CordBat batch correction. QC-independent for batch correction. Requires a reference batch (auto-selected by default). | `LOESS_SPAN`, `CORDBAT_REF_BATCH` |
+| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). | — |
 
 ## Normalisation
 
@@ -135,18 +140,12 @@ output/
     pre_correction/
       QC_plots/
     {method}/
-      feature_table_full.xlsx           # all features, unclustered
-      feature_info_full.xlsx            # feature metadata with QC metrics, unclustered
-      annotations_full.xlsx             # MSDIAL annotations, unclustered
-      feature_table.xlsx                # one representative per cluster
-      feature_info.xlsx
-      annotations.xlsx                  # annotations with cluster-member fallback
-      feature_table_full_rsdXX.xlsx     # above, with global QC RSD < XX% filter applied
-      feature_table_rsdXX.xlsx
-      annotations_rsdXX.xlsx
-      feature_table_full_batchrsdXX.xlsx  # above, with per-batch QC RSD < XX% in >= 50% of batches
-      feature_table_batchrsdXX.xlsx
-      annotations_batchrsdXX.xlsx
+      results_full.xlsx                 # all features, unclustered
+      results.xlsx                      # one representative per cluster
+      results_full_rsdXX.xlsx           # above, with global QC RSD < XX% filter applied
+      results_rsdXX.xlsx
+      results_full_batchrsdXX.xlsx      # above, with per-batch QC RSD < XX% in >= 50% of batches
+      results_batchrsdXX.xlsx
       QC_plots/
 intermediates/
   {COLUMN}_{POLARITY}/
@@ -157,6 +156,15 @@ intermediates/
 ```
 
 The `XX` in output filenames reflects `RSD_THRESHOLD` (e.g. `_rsd30` at default, `_rsd40` if `RSD_THRESHOLD=0.40`).
+
+Each `results*.xlsx` workbook contains:
+
+| Sheet | Contents |
+|---|---|
+| `Peak_table` | Feature abundance matrix (rows = features, columns = samples) |
+| `Feature_metadata` | mz, rt, adduct, QC metrics (RSD, D_ratio), and MSDIAL annotations (e.g. metabolite name) merged by feature |
+| `Cluster_info` | Cluster ID, member features, cluster size, and MPA — only present in `results.xlsx` (clustered) workbooks |
+| `Settings` | Run parameters, correction method, feature-set filter applied, and versions of all loaded packages |
 
 ## Feature filtering
 

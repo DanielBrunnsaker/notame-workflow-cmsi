@@ -9,8 +9,8 @@
 
 VALID_CORRECTION_METHODS <- c(
   "none", "notame", "pmp_qcrsc", "pmp_qcrsc_scale", "pmp_qcrsc_feature_scale",
-  "serrf", "batchcorr", "combat_only", "loess_combat", "loess_limma",
-  "loess_feature_median", "loess_global_median", "cordbat_only",
+  "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat",
+  "loess_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
   "loess_cordbat", "waveica"
 )
 
@@ -35,6 +35,7 @@ run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
                                   low_int_filter_frac, low_int_percentile,
                                   min_qc_sample_detection, min_batch_detection,
                                   rsd_threshold, ruv_k, serrf_num, loess_span,
+                                  loess_sample_span, loess_sample_min_obs,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
                                   save_pre_correction_plots) {
   problems <- character(0)
@@ -78,11 +79,13 @@ run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
   problems <- check_numeric(problems, "MIN_QC_SAMPLE_DETECTION", min_qc_sample_detection, min = 0, max = 1)
   problems <- check_numeric(problems, "RSD_THRESHOLD",           rsd_threshold,           min = 0)
   problems <- check_numeric(problems, "LOESS_SPAN",              loess_span,              min = 0, max = 1)
+  problems <- check_numeric(problems, "LOESS_SAMPLE_SPAN",       loess_sample_span,       min = 0, max = 1)
 
   # Numeric parameters: required integers
-  problems <- check_numeric(problems, "MIN_BATCH_DETECTION", min_batch_detection, min = 0)
-  problems <- check_numeric(problems, "RUV_K",               ruv_k,               min = 1)
-  problems <- check_numeric(problems, "SERRF_NUM",           serrf_num,           min = 1)
+  problems <- check_numeric(problems, "MIN_BATCH_DETECTION",    min_batch_detection,    min = 0)
+  problems <- check_numeric(problems, "RUV_K",                  ruv_k,                  min = 1)
+  problems <- check_numeric(problems, "SERRF_NUM",               serrf_num,              min = 1)
+  problems <- check_numeric(problems, "LOESS_SAMPLE_MIN_OBS",    loess_sample_min_obs,   min = 4)
 
   # Numeric parameters: optional (NA means disabled)
   problems <- check_numeric(problems, "BLANK_RATIO",    blank_ratio,    min = 0,           allow_na = TRUE)

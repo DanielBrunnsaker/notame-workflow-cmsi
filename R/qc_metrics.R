@@ -1,21 +1,129 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Output helpers
+#
+# Each method/feature-set combination is written as a single multi-sheet
+# workbook (via write_results_workbook) rather than separate files:
+#   Peak_table       — feature abundance matrix
+#   Feature_metadata — mz, rt, adduct, QC metrics, MSDIAL annotations
+#   Cluster_info     — cluster membership (only present when se is clustered)
+#   Settings         — run parameters and loaded package versions
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# Write a plain feature abundance table: rows = features, columns = sample names.
-write_feature_table <- function(se, file) {
+# Feature abundance table: rows = features, columns = sample names.
+build_peak_table <- function(se) {
   mat <- as.data.frame(assay(se, 1))
   colnames(mat) <- colData(se)$Original_name
-  write.xlsx(mat, file, rowNames = TRUE)
+  mat
 }
 
 
-# Write "client"-facing feature metadata: mz, rt, cluster info, and QC metrics.
-write_feature_info <- function(se, file) {
-  rd   <- as.data.frame(rowData(se))
-  keep <- grep("mz|rt|cluster|RSD|D_ratio|adduct", colnames(rd), ignore.case = TRUE)
-  write.xlsx(rd[, keep, drop = FALSE], file, rowNames = TRUE)
+# Resolve MSDIAL annotations for each feature in `se`, filling in a name from
+# a cluster member when the representative feature itself has no metabolite
+# name. Returns annot_df rows reordered/matched to rownames(se), with an
+# Annotation_source column noting where each row's data came from.
+resolve_annotations <- function(se, annot_df) {
+  ids <- rownames(se)
+  rd  <- as.data.frame(rowData(se), check.names = FALSE)
+
+  name_col     <- "Metabolite name"
+  is_annotated <- function(x) !is.na(x) & nchar(trimws(x)) > 0 & !grepl("^Unknown$", x, ignore.case = TRUE)
+
+  out <- annot_df[match(ids, annot_df$Feature_ID), , drop = FALSE]
+  out$Feature_ID        <- ids
+  rownames(out)         <- NULL
+  out$Annotation_source <- "Representative feature"
+
+  if (name_col %in% colnames(out) && "Cluster_features" %in% colnames(rd)) {
+    needs <- which(!is_annotated(out[[name_col]]))
+    for (i in needs) {
+      id          <- ids[i]
+      members_raw <- rd[id, "Cluster_features"]
+      if (is.na(members_raw) || nchar(trimws(as.character(members_raw))) == 0) next
+      member_ids  <- trimws(strsplit(as.character(members_raw), ";")[[1]])
+      member_rows <- annot_df[annot_df$Feature_ID %in% member_ids, , drop = FALSE]
+      annotated   <- member_rows[is_annotated(member_rows[[name_col]]), , drop = FALSE]
+      if (nrow(annotated) == 0) next
+      out[i, seq_len(ncol(annot_df))] <- annotated[1, ]
+      out$Feature_ID[i]        <- id
+      out$Annotation_source[i] <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
+    }
+  }
+
+  out
+}
+
+
+# "Client"-facing feature metadata: mz, rt, adduct, QC metrics, and resolved
+# MSDIAL annotations, merged by Feature_ID. Columns already present in rd
+# under a different name (mz/rt/adduct) are dropped from the annotation side.
+build_feature_metadata <- function(se, annot_df) {
+  rd   <- as.data.frame(rowData(se), check.names = FALSE)
+  keep <- grep("mz|rt|RSD|D_ratio|adduct", colnames(rd), ignore.case = TRUE)
+  meta <- cbind(Feature_ID = rownames(rd), rd[, keep, drop = FALSE])
+
+  annot     <- resolve_annotations(se, annot_df)
+  dup_cols  <- c("Average Mz", "Average Rt(min)", "Adduct type")
+  annot     <- annot[, !colnames(annot) %in% dup_cols, drop = FALSE]
+
+  merged <- merge(meta, annot, by = "Feature_ID", all.x = TRUE, sort = FALSE)
+  merged[match(meta$Feature_ID, merged$Feature_ID), ]
+}
+
+
+# Cluster membership table (cluster ID, member features, size, MPA). Returns
+# NULL when `se` carries no cluster columns, i.e. it hasn't been through
+# cluster_features()/compress_clusters().
+build_cluster_info <- function(se) {
+  rd   <- as.data.frame(rowData(se), check.names = FALSE)
+  keep <- grep("cluster|mpa", colnames(rd), ignore.case = TRUE)
+  if (length(keep) == 0) return(NULL)
+  cbind(Feature_ID = rownames(rd), rd[, keep, drop = FALSE])
+}
+
+
+# Versions of all attached (library()'d) packages, for the Settings sheet.
+build_software_df <- function() {
+  pkgs <- sessionInfo()$otherPkgs
+  df <- if (is.null(pkgs)) {
+    data.frame(Package = character(0), Version = character(0))
+  } else {
+    data.frame(
+      Package = vapply(pkgs, `[[`, character(1), "Package"),
+      Version = vapply(pkgs, `[[`, character(1), "Version"),
+      stringsAsFactors = FALSE
+    )
+  }
+  rbind(data.frame(Package = "R", Version = as.character(getRversion())), df[order(df$Package), ])
+}
+
+
+# Write one multi-sheet results workbook for a feature set. settings_df is a
+# Parameter/Value data.frame (run parameters + per-call context such as
+# method and feature-set label); a package-versions table is appended below
+# it on the same sheet.
+write_results_workbook <- function(se, annot_df, settings_df, file) {
+  tryCatch({
+    wb <- createWorkbook()
+
+    addWorksheet(wb, "Peak_table")
+    writeData(wb, "Peak_table", build_peak_table(se), rowNames = TRUE)
+
+    addWorksheet(wb, "Feature_metadata")
+    writeData(wb, "Feature_metadata", build_feature_metadata(se, annot_df), rowNames = FALSE)
+
+    cluster_info <- build_cluster_info(se)
+    if (!is.null(cluster_info)) {
+      addWorksheet(wb, "Cluster_info")
+      writeData(wb, "Cluster_info", cluster_info, rowNames = FALSE)
+    }
+
+    addWorksheet(wb, "Settings")
+    writeData(wb, "Settings", settings_df, startRow = 1)
+    writeData(wb, "Settings", build_software_df(), startRow = nrow(settings_df) + 3)
+
+    saveWorkbook(wb, file, overwrite = TRUE)
+  }, error = function(e) message("WARNING: could not write ", file, ": ", conditionMessage(e)))
 }
 
 

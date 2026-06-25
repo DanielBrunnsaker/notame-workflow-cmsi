@@ -59,8 +59,8 @@ Environment variables (required variables are marked; all others are optional wi
                         Each method is saved to its own output subfolder.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
-                                 batchcorr | combat_only | loess_combat | loess_limma |
-                                 loess_feature_median | loess_global_median |
+                                 batchcorr | combat_only | loess_combat | loess_samples_combat |
+                                 loess_limma | loess_feature_median | loess_global_median |
                                  cordbat_only | loess_cordbat | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
@@ -112,9 +112,22 @@ Environment variables (required variables are marked; all others are optional wi
                         Automatically capped at floor(min_QC_per_batch / 2) at runtime.
                         Default: 5
 
-  LOESS_SPAN            LOESS smoothing span for drift correction (loess_combat, loess_limma, loess_feature_median, loess_global_median).
-                        Higher = smoother, more conservative correction.
+  LOESS_SPAN            LOESS smoothing span for QC-based drift correction (loess_combat, loess_limma,
+                        loess_feature_median, loess_global_median). Higher = smoother, more
+                        conservative correction.
                         Default: 0.75
+
+  LOESS_SAMPLE_SPAN     LOESS smoothing span for QC-free drift correction (loess_samples_combat),
+                        fit on biological samples instead of QC. Wider than LOESS_SPAN by default
+                        since each point is a unique biological measurement, not a technical
+                        replicate — a tighter span risks fitting individual-sample noise as drift.
+                        Default: 0.9
+
+  LOESS_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt
+                        QC-free drift correction (loess_samples_combat). Deliberately higher than
+                        the QC-based fit's threshold of 4, since sample points are far noisier.
+                        Features below this are left uncorrected for that batch.
+                        Default: 10
 
   CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
                         All other batches are corrected onto this batch.
@@ -182,7 +195,8 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "serrf"               — SERRF random forest correction (Fan et al. 2019)
 #   "batchcorr"           — cluster-based spline drift + between-batch normalisation (Brunius et al.)
 #   "combat_only"         — ComBat batch correction only (no drift correction)
-#   "loess_combat"        — per-batch LOESS drift correction + ComBat batch correction
+#   "loess_combat"        — per-batch LOESS drift correction (QC-based) + ComBat batch correction
+#   "loess_samples_combat" — per-batch LOESS drift correction (QC-free, fit on samples) + ComBat
 #   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
 #   "loess_cordbat"       — per-batch LOESS drift correction + CordBat batch correction
 #   "waveica"             — WaveICA 2.0 wavelet-based correction
@@ -191,6 +205,8 @@ CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ","
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
+LOESS_SAMPLE_SPAN         <- as.numeric(get_env("LOESS_SAMPLE_SPAN", "0.9"))
+LOESS_SAMPLE_MIN_OBS      <- as.integer(get_env("LOESS_SAMPLE_MIN_OBS", "10"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
@@ -208,49 +224,10 @@ run_preflight_checks(
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
+  loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS
 )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Write a per-method MSDIAL annotations file, filtered to features present in
-# the given SE. For clustered SEs, borrows annotation from a cluster member
-# when the representative feature itself has no metabolite name.
-write_annotations <- function(se, annot_df, file) {
-  tryCatch({
-    ids <- rownames(se)
-    rd  <- as.data.frame(rowData(se), check.names = FALSE)
-
-    name_col     <- "Metabolite name"
-    is_annotated <- function(x) !is.na(x) & nchar(trimws(x)) > 0 & !grepl("^Unknown$", x, ignore.case = TRUE)
-
-    out <- annot_df[match(ids, annot_df$Feature_ID), , drop = FALSE]
-    out$Feature_ID        <- ids
-    rownames(out)         <- NULL
-    out$Annotation_source <- "Representative feature"
-
-    if (name_col %in% colnames(out) && "Cluster_features" %in% colnames(rd)) {
-      needs <- which(!is_annotated(out[[name_col]]))
-      for (i in needs) {
-        id          <- ids[i]
-        members_raw <- rd[id, "Cluster_features"]
-        if (is.na(members_raw) || nchar(trimws(as.character(members_raw))) == 0) next
-        member_ids  <- trimws(strsplit(as.character(members_raw), ";")[[1]])
-        member_rows <- annot_df[annot_df$Feature_ID %in% member_ids, , drop = FALSE]
-        annotated   <- member_rows[is_annotated(member_rows[[name_col]]), , drop = FALSE]
-        if (nrow(annotated) == 0) next
-        out[i, seq_len(ncol(annot_df))] <- annotated[1, ]
-        out$Feature_ID[i]        <- id
-        out$Annotation_source[i] <- paste0("Cluster member (", annotated$Feature_ID[1], ")")
-      }
-    }
-
-    write.xlsx(out, file, colNames = TRUE, rowNames = FALSE)
-  }, error = function(e) message("WARNING: could not write annotations to ", file, ": ", conditionMessage(e)))
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) CONVERT & IMPORT
@@ -445,30 +422,40 @@ write.csv(filter_log, file.path(interdir, "prefilter_log.csv"), row.names = FALS
 
 report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
 
-# Save run parameters
-writeLines(c(
-  paste("Run timestamp:          ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
-  paste("IN_XLSX:                ", in_xlsx),
-  paste("COLUMN:                 ", column),
-  paste("POLARITY:               ", polarity),
-  paste("CORRECTION_METHODS:     ", paste(CORRECTION_METHODS, collapse = ", ")),
-  paste("QC_DETECTION_LIMIT:     ", QC_DETECTION_LIMIT),
-  paste("SAMPLE_DETECTION_LIMIT: ", SAMPLE_DETECTION_LIMIT),
-  paste("BLANK_RATIO:            ", BLANK_RATIO),
-  paste("LOW_INT_FILTER:         ", if (!is.na(LOW_INT_FILTER)) LOW_INT_FILTER else "(disabled)"),
-  paste("LOW_INT_FILTER_FRAC:    ", LOW_INT_FILTER_FRAC),
-  paste("LOW_INT_PERCENTILE:     ", LOW_INT_PERCENTILE),
-  paste("LOW_INT_CUTOFF:         ", if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)"),
-  paste("MIN_QC_SAMPLE_DETECTION: ", MIN_QC_SAMPLE_DETECTION),
-  paste("MIN_BATCH_DETECTION:    ", MIN_BATCH_DETECTION),
-  paste("QC_RSD_FILTER:          ", if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)"),
-  paste("RSD_THRESHOLD:          ", RSD_THRESHOLD),
-  paste("RUV_K:                  ", RUV_K),
-  paste("SERRF_NUM:              ", SERRF_NUM),
-  paste("LOESS_SPAN:             ", LOESS_SPAN),
-  paste("CORDBAT_REF_BATCH:      ", if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH),
-  paste("N_CORES:                ", if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env)
-), file.path(interdir, "run_parameters.txt"))
+# Run parameters, kept as a data.frame so the same values can be written to
+# run_parameters.txt and embedded in each method's Settings sheet.
+run_params <- list(
+  "Run timestamp"           = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+  "IN_XLSX"                 = in_xlsx,
+  "COLUMN"                  = column,
+  "POLARITY"                = polarity,
+  "CORRECTION_METHODS"      = paste(CORRECTION_METHODS, collapse = ", "),
+  "QC_DETECTION_LIMIT"      = QC_DETECTION_LIMIT,
+  "SAMPLE_DETECTION_LIMIT"  = SAMPLE_DETECTION_LIMIT,
+  "BLANK_RATIO"             = BLANK_RATIO,
+  "LOW_INT_FILTER"          = if (!is.na(LOW_INT_FILTER)) LOW_INT_FILTER else "(disabled)",
+  "LOW_INT_FILTER_FRAC"     = LOW_INT_FILTER_FRAC,
+  "LOW_INT_PERCENTILE"      = LOW_INT_PERCENTILE,
+  "LOW_INT_CUTOFF"          = if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)",
+  "MIN_QC_SAMPLE_DETECTION" = MIN_QC_SAMPLE_DETECTION,
+  "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
+  "QC_RSD_FILTER"           = if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)",
+  "RSD_THRESHOLD"           = RSD_THRESHOLD,
+  "RUV_K"                   = RUV_K,
+  "SERRF_NUM"               = SERRF_NUM,
+  "LOESS_SPAN"              = LOESS_SPAN,
+  "LOESS_SAMPLE_SPAN"       = LOESS_SAMPLE_SPAN,
+  "LOESS_SAMPLE_MIN_OBS"    = LOESS_SAMPLE_MIN_OBS,
+  "CORDBAT_REF_BATCH"       = if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH,
+  "NORMALIZATION"           = NORMALIZATION,
+  "N_CORES"                 = if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env
+)
+run_params_df <- data.frame(Parameter = names(run_params),
+                            Value     = unlist(run_params, use.names = FALSE),
+                            stringsAsFactors = FALSE)
+
+writeLines(sprintf("%-24s%s", paste0(run_params_df$Parameter, ":"), run_params_df$Value),
+           file.path(interdir, "run_parameters.txt"))
 
 # Sanity check: injection order must be finite for all samples
 bad_inj <- !is.finite(colData(data)$Injection_order)
@@ -547,13 +534,14 @@ for (method in CORRECTION_METHODS) {
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
       loess_combat        = correct_loess_combat(data, LOESS_SPAN),
+      loess_samples_combat = correct_loess_samples_combat(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
       loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
@@ -598,28 +586,38 @@ for (method in CORRECTION_METHODS) {
   message("==> Writing output: ", method)
   combined <- add_batch_qc_metrics(combined)
 
-  # Helper: write one set of output files for a given SE
-  write_outputs <- function(se, suffix) {
-    write_feature_table(se, file = file.path(method_out, paste0("feature_table_full", suffix, ".xlsx")))
-    write_feature_info(se,  file = file.path(method_out, paste0("feature_info_full",  suffix, ".xlsx")))
-    write_annotations(se, msdial_annotations, file.path(method_out, paste0("annotations_full", suffix, ".xlsx")))
+  # Settings sheet content for this method: global run parameters plus the
+  # method and feature-set context for this particular workbook.
+  method_settings_df <- function(feature_set_label) {
+    rbind(run_params_df,
+          data.frame(Parameter = c("CORRECTION_METHOD", "FEATURE_SET"),
+                     Value     = c(method, feature_set_label),
+                     stringsAsFactors = FALSE))
+  }
+
+  # Helper: write the full (uncompressed) and clustered (compressed) results
+  # workbooks for a given SE.
+  write_outputs <- function(se, suffix, feature_set_label) {
+    settings_df <- method_settings_df(feature_set_label)
+    write_results_workbook(se, msdial_annotations, settings_df,
+                            file = file.path(method_out, paste0("results_full", suffix, ".xlsx")))
     se_c <- tryCatch(compress_clusters(cluster_features(se, all_features = TRUE)),
                      error = function(e) { message("WARNING: clustering failed: ", conditionMessage(e)); NULL })
     if (!is.null(se_c)) {
-      write_feature_table(se_c, file = file.path(method_out, paste0("feature_table", suffix, ".xlsx")))
-      write_feature_info(se_c,  file = file.path(method_out, paste0("feature_info",  suffix, ".xlsx")))
-      write_annotations(se_c, msdial_annotations, file.path(method_out, paste0("annotations", suffix, ".xlsx")))
+      write_results_workbook(se_c, msdial_annotations, settings_df,
+                              file = file.path(method_out, paste0("results", suffix, ".xlsx")))
     }
   }
 
   # Full feature set
-  write_outputs(combined, "")
+  write_outputs(combined, "", "All features")
 
   # Global QC-RSD filter
   rsd_suffix <- paste0("_rsd", round(RSD_THRESHOLD * 100))
   tryCatch({
     global_keep <- !is.na(rowData(combined)$RSD_r) & rowData(combined)$RSD_r < RSD_THRESHOLD
-    write_outputs(combined[global_keep, ], rsd_suffix)
+    write_outputs(combined[global_keep, ], rsd_suffix,
+                  sprintf("QC RSD < %.0f%%", RSD_THRESHOLD * 100))
   }, error = function(e) message("WARNING: global RSD filter export failed (", method, "): ", conditionMessage(e)))
 
   # Batchwise QC-RSD filter (pass in >= 50% of batches)
@@ -628,7 +626,9 @@ for (method in CORRECTION_METHODS) {
     tryCatch({
       batch_rsd_mat <- as.matrix(as.data.frame(rowData(combined))[, batch_rsd_cols, drop = FALSE])
       frac_passing  <- rowMeans(batch_rsd_mat < RSD_THRESHOLD, na.rm = TRUE)
-      write_outputs(combined[!is.na(frac_passing) & frac_passing >= 0.5, ], paste0("_batchrsd", round(RSD_THRESHOLD * 100)))
+      write_outputs(combined[!is.na(frac_passing) & frac_passing >= 0.5, ],
+                    paste0("_batchrsd", round(RSD_THRESHOLD * 100)),
+                    sprintf("Per-batch QC RSD < %.0f%% in >= 50%% of batches", RSD_THRESHOLD * 100))
     }, error = function(e) message("WARNING: batchwise RSD filter export failed (", method, "): ", conditionMessage(e)))
   }
 }
