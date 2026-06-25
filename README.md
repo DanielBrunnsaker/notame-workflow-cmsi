@@ -140,12 +140,12 @@ output/
     pre_correction/
       QC_plots/
     {method}/
-      results_full.xlsx                 # all features, unclustered
-      results.xlsx                      # one representative per cluster
-      results_full_rsdXX.xlsx           # above, with global QC RSD < XX% filter applied
-      results_rsdXX.xlsx
-      results_full_batchrsdXX.xlsx      # above, with per-batch QC RSD < XX% in >= 50% of batches
-      results_batchrsdXX.xlsx
+      results_full.xlsx                       # all features, unclustered
+      results_clustered.xlsx                  # one representative per cluster
+      results_full_rsdXX.xlsx                 # above, with global QC RSD < XX% filter applied
+      results_clustered_rsdXX.xlsx
+      results_full_batchrsdXX.xlsx            # above, with per-batch QC RSD < XX% in >= 50% of batches
+      results_clustered_batchrsdXX.xlsx
       QC_plots/
 intermediates/
   {COLUMN}_{POLARITY}/
@@ -162,8 +162,8 @@ Each `results*.xlsx` workbook contains:
 | Sheet | Contents |
 |---|---|
 | `Peak_table` | Feature abundance matrix (rows = features, columns = samples) |
-| `Feature_metadata` | mz, rt, adduct, QC metrics (RSD, D_ratio), and MSDIAL annotations (e.g. metabolite name) merged by feature |
-| `Cluster_info` | Cluster ID, member features, cluster size, and MPA — only present in `results.xlsx` (clustered) workbooks |
+| `Feature_metadata` | mz, rt, adduct, QC metrics (RSD, D_ratio), and a curated subset of MSDIAL annotations (metabolite name, fill %, S/N) merged by feature |
+| `Cluster_info` | Cluster ID, member features, cluster size, and MPA — only present in `results_clustered*.xlsx` workbooks |
 | `Settings` | Run parameters, correction method, feature-set filter applied, and versions of all loaded packages |
 
 ## Feature filtering

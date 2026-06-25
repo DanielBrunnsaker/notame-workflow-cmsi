@@ -2,7 +2,7 @@
 # Author: Fanjing Guo
 # Date: 2022.12.28
 
-library(igraph)
+suppressPackageStartupMessages(library(igraph))
 
 # ----------------------------------------------
 # Community detection

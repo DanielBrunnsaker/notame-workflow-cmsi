@@ -102,7 +102,7 @@ correct_notame <- function(data, ruv_k) {
 }
 
 correct_loess_combat <- function(data, loess_span) {
-  library(sva)
+  suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
@@ -144,7 +144,7 @@ correct_loess_combat <- function(data, loess_span) {
 }
 
 correct_loess_samples_combat <- function(data, loess_span, loess_min_obs) {
-  library(sva)
+  suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (QC-free LOESS on biological samples)")
@@ -326,7 +326,7 @@ batch_global_median_correct <- function(se) {
 }
 
 correct_loess_limma <- function(data, loess_span) {
-  library(limma)
+  suppressPackageStartupMessages(library(limma))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
   message("==> Drift correction (LOESS)")
@@ -361,7 +361,7 @@ correct_loess_limma <- function(data, loess_span) {
 }
 
 correct_combat_only <- function(data) {
-  library(sva)
+  suppressPackageStartupMessages(library(sva))
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)
@@ -403,7 +403,7 @@ diag_nonpositive <- function(se, label = "") {
 }
 
 correct_pmp_qcrsc <- function(data) {
-  library(pmp)
+  suppressPackageStartupMessages(library(pmp))
 
   obs_mask <- !is.na(assay(data, 1))
 
@@ -451,7 +451,7 @@ correct_pmp_qcrsc <- function(data) {
 }
 
 correct_pmp_qcrsc_scale <- function(data) {
-  library(pmp)
+  suppressPackageStartupMessages(library(pmp))
 
   obs_mask <- !is.na(assay(data, 1))
 
@@ -538,7 +538,7 @@ correct_pmp_qcrsc_scale <- function(data) {
 # difference from the fully corrected batches is that within-batch drift
 # correction is skipped (no QC samples to anchor the spline).
 correct_pmp_qcrsc_feature_scale <- function(data) {
-  library(pmp)
+  suppressPackageStartupMessages(library(pmp))
 
   obs_mask <- !is.na(assay(data, 1))
 
@@ -624,7 +624,7 @@ correct_batchcorr <- function(data,
                               G          = seq(5, 35, by = 10),
                               modelNames = c("VVV", "VVE", "VEV", "VEE", "VEI", "VVI", "VII"),
                               qualRatio  = 0.4) {
-  library(batchCorr)
+  suppressPackageStartupMessages(library(batchCorr))
 
   obs_mask <- !is.na(assay(data, 1))
 
@@ -768,7 +768,7 @@ select_ref_batch_cordbat <- function(se) {
 # ref_batch: batch ID string, or NULL for auto-selection.
 run_cordbat <- function(combined, ref_batch) {
   if (!exists("CordBat", mode = "function")) {
-    library(igraph)
+    suppressPackageStartupMessages(library(igraph))
     source("R/Funcs_CordBat_algorithm.R")
   }
 
@@ -863,7 +863,7 @@ correct_loess_cordbat <- function(data, loess_span, ref_batch = NULL) {
 
 
 correct_waveica <- function(data) {
-  library(WaveICA2.0)
+  suppressPackageStartupMessages(library(WaveICA2.0))
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)

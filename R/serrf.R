@@ -235,8 +235,10 @@ serrfR <- function(train,
 #   num                number of correlated features to use as RF predictors
 #   detectcores_ratio  fraction of available CPU cores to use for parallelism
 correct_serrf <- function(data, num = 10) {
-  library(ranger)
-  library(parallel)
+  suppressPackageStartupMessages({
+    library(ranger)
+    library(parallel)
+  })
 
   # ── 1. Pre-imputation detection mask (for unbiased ltQC metrics) ────────────
   obs_mask <- !is.na(assay(data, 1))
@@ -286,7 +288,7 @@ correct_serrf <- function(data, num = 10) {
   cl         <- parallel::makeCluster(n_cores)
   cl_stopped <- FALSE
   on.exit({ if (!cl_stopped) parallel::stopCluster(cl) }, add = TRUE)
-  parallel::clusterEvalQ(cl, library(ranger))
+  parallel::clusterEvalQ(cl, suppressPackageStartupMessages(library(ranger)))
 
   # ── 6. Correct biological samples ───────────────────────────────────────────
   message("==> SERRF: correcting Sample (n=", length(samp_idx), ") using QC (n=", length(qc_idx), ")")

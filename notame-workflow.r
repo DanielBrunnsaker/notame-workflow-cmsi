@@ -7,11 +7,13 @@
 # Daniel Brunnsåker, 2026-03-20
 # ─────────────────────────────────────────────────────────────────────────────
 
-library(notame)
-library(notameViz)
-library(notameStats)
-library(openxlsx)
-library(doParallel)
+suppressPackageStartupMessages({
+  library(notame)
+  library(notameViz)
+  library(notameStats)
+  library(openxlsx)
+  library(doParallel)
+})
 
 source("R/preflight.R")
 source("R/msdial_to_notame.R")
@@ -477,7 +479,8 @@ if (any(bad_inj)) {
 if (SAVE_PRE_CORRECTION_PLOTS) {
   dir.create(file.path(output_dir, "pre_correction"), showWarnings = FALSE, recursive = TRUE)
   tryCatch(
-    save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID"),
+    save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID",
+                  perplexity = safe_perplexity(ncol(data))),
     error = function(e) message("WARNING: save_QC_plots failed (pre-correction): ", conditionMessage(e))
   )
 }
@@ -557,7 +560,7 @@ for (method in CORRECTION_METHODS) {
   # Optional post-correction normalisation for dilution effects
   if (NORMALIZATION == "pqn") {
     tryCatch({
-      library(pmp)
+      suppressPackageStartupMessages(library(pmp))
       classes    <- colData(combined)$QC
       qc_present <- any(classes == "QC")
       combined   <- pqn_normalisation(df = combined, classes = classes,
@@ -570,7 +573,8 @@ for (method in CORRECTION_METHODS) {
   }
 
   tryCatch(
-    save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_correction_"), id = "Sample_ID"),
+    save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_correction_"), id = "Sample_ID",
+                  perplexity = safe_perplexity(ncol(combined))),
     error = function(e) message("WARNING: save_QC_plots failed (", method, "): ", conditionMessage(e))
   )
 
@@ -605,7 +609,7 @@ for (method in CORRECTION_METHODS) {
                      error = function(e) { message("WARNING: clustering failed: ", conditionMessage(e)); NULL })
     if (!is.null(se_c)) {
       write_results_workbook(se_c, msdial_annotations, settings_df,
-                              file = file.path(method_out, paste0("results", suffix, ".xlsx")))
+                              file = file.path(method_out, paste0("results_clustered", suffix, ".xlsx")))
     }
   }
 

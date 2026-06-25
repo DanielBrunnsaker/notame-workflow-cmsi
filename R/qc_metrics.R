@@ -54,17 +54,21 @@ resolve_annotations <- function(se, annot_df) {
 }
 
 
-# "Client"-facing feature metadata: mz, rt, adduct, QC metrics, and resolved
-# MSDIAL annotations, merged by Feature_ID. Columns already present in rd
-# under a different name (mz/rt/adduct) are dropped from the annotation side.
+# "Client"-facing feature metadata: mz, rt, adduct, QC metrics, and a curated
+# subset of resolved MSDIAL annotations (identity + fill/S-N quality scores),
+# merged by Feature_ID. The raw MSDIAL annotation table carries dozens of
+# columns (alignment ID, spectral match scores, spectrum reference file,
+# comments, etc.) that aren't useful in client-facing output, so only the
+# metabolite identity and fill/S-N columns are kept.
 build_feature_metadata <- function(se, annot_df) {
   rd   <- as.data.frame(rowData(se), check.names = FALSE)
   keep <- grep("mz|rt|RSD|D_ratio|adduct", colnames(rd), ignore.case = TRUE)
   meta <- cbind(Feature_ID = rownames(rd), rd[, keep, drop = FALSE])
 
-  annot     <- resolve_annotations(se, annot_df)
-  dup_cols  <- c("Average Mz", "Average Rt(min)", "Adduct type")
-  annot     <- annot[, !colnames(annot) %in% dup_cols, drop = FALSE]
+  annot      <- resolve_annotations(se, annot_df)
+  annot_keep <- grep("^Feature_ID$|Metabolite name|Annotation_source|fill|S/N",
+                     colnames(annot), ignore.case = TRUE)
+  annot      <- annot[, annot_keep, drop = FALSE]
 
   merged <- merge(meta, annot, by = "Feature_ID", all.x = TRUE, sort = FALSE)
   merged[match(meta$Feature_ID, merged$Feature_ID), ]
@@ -125,6 +129,13 @@ write_results_workbook <- function(se, annot_df, settings_df, file) {
     saveWorkbook(wb, file, overwrite = TRUE)
   }, error = function(e) message("WARNING: could not write ", file, ": ", conditionMessage(e)))
 }
+
+
+# t-SNE perplexity scaled to sample count, for save_QC_plots(). Rtsne requires
+# perplexity < (n-1)/3; the package default of 30 needs ~91+ samples to satisfy
+# that, so smaller runs would otherwise error (silently, since save_QC_plots is
+# called inside tryCatch) instead of producing a plot.
+safe_perplexity <- function(n, max_perplexity = 30) max(2, min(max_perplexity, floor((n - 1) / 3)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
