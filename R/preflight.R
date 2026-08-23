@@ -29,7 +29,8 @@ check_numeric <- function(problems, name, value, min = NULL, max = NULL, allow_n
   problems
 }
 
-run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
+run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sample_sheet,
+                                  project_folder, column, polarity,
                                   correction_methods, normalization,
                                   qc_detection_limit, sample_detection_limit,
                                   low_int_filter_frac, low_int_percentile,
@@ -37,14 +38,51 @@ run_preflight_checks <- function(in_xlsx, project_folder, column, polarity,
                                   rsd_threshold, ruv_k, serrf_num, loess_span,
                                   loess_sample_span, loess_sample_min_obs,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
-                                  save_pre_correction_plots) {
+                                  save_pre_correction_plots,
+                                  config_file = "", raw_sample_type_rules = NULL) {
   problems <- character(0)
 
+  # Config file
+  if (config_file != "") {
+    if (!file.exists(config_file)) {
+      problems <- c(problems, paste0("CONFIG_FILE does not exist: ", config_file))
+    } else if (is.null(tryCatch(yaml::read_yaml(config_file), error = function(e) NULL))) {
+      problems <- c(problems, paste0("CONFIG_FILE could not be parsed as YAML: ", config_file))
+    }
+  }
+
+  # sample_type_rules (raw, as read from YAML — list of pattern/type pairs)
+  for (i in seq_along(raw_sample_type_rules)) {
+    r <- raw_sample_type_rules[[i]]
+    pattern <- r$pattern
+    type    <- r$type
+    if (is.null(pattern) || is.null(type) ||
+        nchar(trimws(as.character(pattern))) == 0 || nchar(trimws(as.character(type))) == 0) {
+      problems <- c(problems, paste0("sample_type_rules[", i, "] needs a non-empty 'pattern' and 'type'"))
+      next
+    }
+    if (inherits(tryCatch(grepl(pattern, ""), error = function(e) e), "error"))
+      problems <- c(problems, paste0("sample_type_rules[", i, "] has an invalid regex pattern: '", pattern, "'"))
+  }
+
   # Input/output paths
-  if (!file.exists(in_xlsx)) {
-    problems <- c(problems, paste0("IN_XLSX does not exist: ", in_xlsx))
-  } else if (!grepl("\\.xlsx$", in_xlsx, ignore.case = TRUE)) {
-    problems <- c(problems, paste0("IN_XLSX must be an .xlsx file: ", in_xlsx))
+  if (input_mode == "msdial") {
+    if (!file.exists(in_xlsx)) {
+      problems <- c(problems, paste0("IN_XLSX does not exist: ", in_xlsx))
+    } else if (!grepl("\\.xlsx$", in_xlsx, ignore.case = TRUE)) {
+      problems <- c(problems, paste0("IN_XLSX must be an .xlsx file: ", in_xlsx))
+    }
+  } else if (input_mode == "xcms") {
+    if (!file.exists(in_feature_table)) {
+      problems <- c(problems, paste0("IN_FEATURE_TABLE does not exist: ", in_feature_table))
+    } else if (!grepl("\\.csv$", in_feature_table, ignore.case = TRUE)) {
+      problems <- c(problems, paste0("IN_FEATURE_TABLE must be a .csv file: ", in_feature_table))
+    }
+    if (!file.exists(in_sample_sheet)) {
+      problems <- c(problems, paste0("IN_SAMPLE_SHEET does not exist: ", in_sample_sheet))
+    } else if (!grepl("\\.xlsx$", in_sample_sheet, ignore.case = TRUE)) {
+      problems <- c(problems, paste0("IN_SAMPLE_SHEET must be an .xlsx file: ", in_sample_sheet))
+    }
   }
 
   if (!dir.exists(project_folder)) {

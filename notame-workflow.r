@@ -1,8 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics.
-# Converts MSDIAL alignment exports to notame format, applies pre-correction
-# feature filters, and runs one or more drift/batch correction methods in
-# parallel. QC metrics are computed per method for comparison.
+# Preprocessing pipeline for untargeted LC-MS metabolomics. Converts a
+# MSDIAL alignment export or an XCMS feature table + sample sheet to notame
+# format, applies pre-correction feature filters, and runs one or more
+# drift/batch correction methods in parallel. QC metrics are computed per
+# method for comparison.
 #
 # Daniel Brunnsåker, 2026-03-20
 # ─────────────────────────────────────────────────────────────────────────────
@@ -13,39 +14,71 @@ suppressPackageStartupMessages({
   library(notameStats)
   library(openxlsx)
   library(doParallel)
+  library(yaml)
+  library(jsonlite)
 })
 
+source("R/config.R")
 source("R/preflight.R")
+source("R/notame_format.R")
 source("R/msdial_to_notame.R")
+source("R/xcms_to_notame.R")
 source("R/qc_metrics.R")
 source("R/drift_correction.R")
 source("R/correction_methods.R")
 source("R/serrf.R")
+source("R/run_log.R")
+source("R/report.R")
 
-n_cores_env <- Sys.getenv("N_CORES", unset = "")
+# Optional YAML config file — supplies default parameter values. Env vars
+# still take precedence over the config file (see get_env() below), so
+# Docker one-off overrides keep working unchanged.
+config_file <- Sys.getenv("CONFIG_FILE", unset = "")
+config <- if (config_file != "") load_config(config_file) else list()
+
+get_env <- function(var, default) {
+  val <- Sys.getenv(var, unset = NA)
+  if (!is.na(val) && val != "") return(val)
+  if (!is.null(config[[var]]) && nchar(config[[var]]) > 0) return(config[[var]])
+  default
+}
+
+n_cores_env <- get_env("N_CORES", "")
 registerDoParallel(cores = if (n_cores_env == "") parallel::detectCores() - 1 else as.integer(n_cores_env))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SETTINGS
-# All parameters can be overridden via environment variables.
+# All parameters can be overridden via environment variables, or supplied in
+# a YAML config file (CONFIG_FILE) — env vars take precedence over the
+# config file when both are set.
 # ─────────────────────────────────────────────────────────────────────────────
-
-get_env <- function(var, default) {
-  val <- Sys.getenv(var, unset = NA)
-  if (is.na(val) || val == "") default else val
-}
 
 if ("--help" %in% commandArgs(trailingOnly = TRUE)) {
   cat("
 Usage: Rscript notame-workflow.r [--help]
 
-Environment variables (required variables are marked; all others are optional with defaults shown):
+Environment variables (required variables are marked; all others are optional with defaults shown).
+Any of these may instead be supplied via a YAML file pointed to by CONFIG_FILE — env vars win
+if both are set for the same parameter.
 
-  IN_XLSX               Path to the MSDIAL alignment export (.xlsx). Required.
+  CONFIG_FILE            Path to an optional YAML config file supplying default values for any
+                        parameter below, plus an optional 'sample_type_rules' list overriding
+                        the QC/ltQC/Blank/Wash/etc. filename-keyword classification. See
+                        config.example.yaml.
+                        Default: (none)
+
+  IN_XLSX               Path to the MSDIAL alignment export (.xlsx). Required, unless
+                        IN_FEATURE_TABLE + IN_SAMPLE_SHEET are set instead.
+
+  IN_FEATURE_TABLE      Path to an XCMS-based feature table (.csv) — alternative to IN_XLSX.
+                        Must be set together with IN_SAMPLE_SHEET.
+
+  IN_SAMPLE_SHEET       Path to the XCMS pipeline's sample sheet (.xlsx) — alternative to
+                        IN_XLSX. Must be set together with IN_FEATURE_TABLE.
 
   PROJECT_FOLDER        Root output directory (intermediates/ and output/ written here). Required.
 
-  FORCE_RECONVERT       Force re-running the MSDIAL conversion step even if a cached
+  FORCE_RECONVERT       Force re-running the conversion step even if a cached
                         notame-formatted file from a previous run is found.
                         Default: FALSE
                         Values:  TRUE | FALSE
@@ -152,17 +185,36 @@ Environment variables (required variables are marked; all others are optional wi
   quit(status = 0)
 }
 
-project_folder <- Sys.getenv("PROJECT_FOLDER", unset = "")
-if (project_folder == "") stop("PROJECT_FOLDER is required. Set it to the root output directory.")
+project_folder <- get_env("PROJECT_FOLDER", "")
+if (project_folder == "") stop("PROJECT_FOLDER is required. Set it via env var or CONFIG_FILE.")
 
-in_xlsx <- Sys.getenv("IN_XLSX", unset = "")
-if (in_xlsx == "") stop("IN_XLSX is required. Set it to the path of your MSDIAL alignment export.")
+# Input: an MSDIAL alignment export (IN_XLSX), or an XCMS-based feature
+# table + sample sheet (IN_FEATURE_TABLE + IN_SAMPLE_SHEET) — mutually
+# exclusive, auto-detected from which are set.
+in_xlsx          <- get_env("IN_XLSX", "")
+in_feature_table <- get_env("IN_FEATURE_TABLE", "")
+in_sample_sheet  <- get_env("IN_SAMPLE_SHEET", "")
 
-polarity <- Sys.getenv("POLARITY", unset = "")
-if (polarity == "") stop("POLARITY is required. Set it to 'POS' or 'NEG'.")
+has_msdial <- in_xlsx != ""
+has_xcms   <- in_feature_table != "" || in_sample_sheet != ""
 
-column <- Sys.getenv("COLUMN", unset = "")
-if (column == "") stop("COLUMN is required. Set it to the chromatographic column type, e.g. 'RP' or 'HILIC'.")
+if (has_msdial && has_xcms) {
+  stop("Set either IN_XLSX (MSDIAL) or IN_FEATURE_TABLE + IN_SAMPLE_SHEET (XCMS), not both.")
+} else if (has_xcms) {
+  if (in_feature_table == "" || in_sample_sheet == "")
+    stop("XCMS input requires both IN_FEATURE_TABLE and IN_SAMPLE_SHEET to be set.")
+  input_mode <- "xcms"
+} else if (has_msdial) {
+  input_mode <- "msdial"
+} else {
+  stop("An input is required: set IN_XLSX (MSDIAL) or IN_FEATURE_TABLE + IN_SAMPLE_SHEET (XCMS), via env var or CONFIG_FILE.")
+}
+
+polarity <- get_env("POLARITY", "")
+if (polarity == "") stop("POLARITY is required. Set it to 'POS' or 'NEG' (env var or CONFIG_FILE).")
+
+column <- get_env("COLUMN", "")
+if (column == "") stop("COLUMN is required. Set it to the chromatographic column type, e.g. 'RP' or 'HILIC' (env var or CONFIG_FILE).")
 
 mode_label <- paste0(column, "_", polarity)  # e.g. RP_POS — used to namespace all output folders
 
@@ -173,14 +225,14 @@ output_dir <- file.path(project_folder, "output",        mode_label)
 QC_DETECTION_LIMIT     <- as.numeric(get_env("QC_DETECTION_LIMIT",     "0.60"))
 SAMPLE_DETECTION_LIMIT <- as.numeric(get_env("SAMPLE_DETECTION_LIMIT", "0.20"))
 
-blank_ratio_env <- Sys.getenv("BLANK_RATIO", unset = "")
+blank_ratio_env <- get_env("BLANK_RATIO", "none")
 BLANK_RATIO <- if (blank_ratio_env %in% c("none", "skip", "")) NA_real_ else
                as.numeric(blank_ratio_env)
 
 LOW_INT_FILTER      <- suppressWarnings(as.numeric(get_env("LOW_INT_FILTER", "")))
 LOW_INT_FILTER_FRAC <- as.numeric(get_env("LOW_INT_FILTER_FRAC", "0.10"))
 LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
-qc_rsd_env    <- Sys.getenv("QC_RSD_FILTER", unset = "")
+qc_rsd_env    <- get_env("QC_RSD_FILTER", "none")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
@@ -220,7 +272,9 @@ FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
 # ─────────────────────────────────────────────────────────────────────────────
 
 run_preflight_checks(
-  in_xlsx = in_xlsx, project_folder = project_folder, column = column, polarity = polarity,
+  input_mode = input_mode, in_xlsx = in_xlsx,
+  in_feature_table = in_feature_table, in_sample_sheet = in_sample_sheet,
+  project_folder = project_folder, column = column, polarity = polarity,
   correction_methods = CORRECTION_METHODS, normalization = NORMALIZATION,
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
@@ -228,8 +282,13 @@ run_preflight_checks(
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
-  save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS
+  save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
+  config_file = config_file, raw_sample_type_rules = config$sample_type_rules
 )
+
+# Resolved after preflight has validated it (pattern/type present, pattern a
+# valid regex) so all config problems are still reported together up front.
+sample_type_rules <- resolve_sample_type_rules(config)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) CONVERT & IMPORT
@@ -237,27 +296,35 @@ run_preflight_checks(
 
 dir.create(interdir, showWarnings = FALSE, recursive = TRUE)
 
-# Cache the MSDIAL conversion: re-parsing the alignment export is one of the
-# slower steps and only needs to be redone when IN_XLSX changes. The
+# Cache the conversion step: re-parsing the source export(s) is one of the
+# slower steps and only needs to be redone when the input(s) change. The
 # annotations table (returned in memory, not part of out_xlsx) is cached
-# alongside it so a cache hit can skip msdial_to_notame() entirely.
-annotations_rds <- file.path(interdir, "msdial_annotations.rds")
+# alongside it so a cache hit can skip the converter call entirely.
+input_files     <- if (input_mode == "xcms") c(in_feature_table, in_sample_sheet) else in_xlsx
+annotations_rds <- file.path(interdir, "conversion_annotations.rds")
+newest_input    <- max(file.mtime(input_files))
 cache_valid <- !FORCE_RECONVERT &&
   file.exists(out_xlsx) && file.exists(annotations_rds) &&
-  file.mtime(out_xlsx)       >= file.mtime(in_xlsx) &&
-  file.mtime(annotations_rds) >= file.mtime(in_xlsx)
+  file.mtime(out_xlsx)        >= newest_input &&
+  file.mtime(annotations_rds) >= newest_input &&
+  (config_file == "" ||
+     (file.mtime(out_xlsx) >= file.mtime(config_file) &&
+      file.mtime(annotations_rds) >= file.mtime(config_file)))  # invalidate on sample_type_rules changes too
 
 if (cache_valid) {
-  message("==> Using cached MSDIAL conversion: ", out_xlsx,
+  message("==> Using cached ", toupper(input_mode), " conversion: ", out_xlsx,
           " (set FORCE_RECONVERT=TRUE to re-run)")
-  msdial_result <- readRDS(annotations_rds)
+  convert_result <- readRDS(annotations_rds)
+} else if (input_mode == "xcms") {
+  convert_result <- xcms_to_notame(in_feature_table, in_sample_sheet, out_xlsx, column, polarity)
+  saveRDS(convert_result, annotations_rds)
 } else {
-  msdial_result <- msdial_to_notame(in_xlsx, out_xlsx)
-  saveRDS(msdial_result, annotations_rds)
+  convert_result <- msdial_to_notame(in_xlsx, out_xlsx, sample_type_rules = sample_type_rules)
+  saveRDS(convert_result, annotations_rds)
 }
 
-mode_name          <- msdial_result$mode
-msdial_annotations <- msdial_result$annotations
+mode_name           <- convert_result$mode
+feature_annotations <- convert_result$annotations
 
 message("==> Importing")
 data <- import_from_excel(file = out_xlsx, sheet = 1, name = mode_name)
@@ -428,7 +495,11 @@ report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
 # run_parameters.txt and embedded in each method's Settings sheet.
 run_params <- list(
   "Run timestamp"           = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-  "IN_XLSX"                 = in_xlsx,
+  "CONFIG_FILE"             = if (config_file == "") "(none)" else config_file,
+  "INPUT_MODE"              = input_mode,
+  "IN_XLSX"                 = if (input_mode == "msdial") in_xlsx else "(n/a)",
+  "IN_FEATURE_TABLE"        = if (input_mode == "xcms") in_feature_table else "(n/a)",
+  "IN_SAMPLE_SHEET"         = if (input_mode == "xcms") in_sample_sheet else "(n/a)",
   "COLUMN"                  = column,
   "POLARITY"                = polarity,
   "CORRECTION_METHODS"      = paste(CORRECTION_METHODS, collapse = ", "),
@@ -466,7 +537,7 @@ if (any(bad_inj)) {
   print(as.data.frame(colData(data))[bad_inj,
     intersect(c("Sample_ID", "Original_name", "QC", "Batch", "Injection_order"),
               colnames(colData(data)))])
-  stop("Non-finite injection orders found — fix msdial_to_notame parsing before proceeding.")
+  stop("Non-finite injection orders found — fix the ", input_mode, "_to_notame() conversion before proceeding.")
 } else {
   cat("Injection_order: OK\n")
 }
@@ -510,12 +581,15 @@ save_correction_summary(assess_quality(data), method = "uncorrected", interdir =
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.csv"), row.names = FALSE)
 
+run_log <- new_run_log()
+
 for (method in CORRECTION_METHODS) {
   message("\n############################################################")
   message("# METHOD: ", toupper(method))
   message("############################################################")
 
-  method_out <- file.path(output_dir, method)
+  method_out   <- file.path(output_dir, method)
+  method_start <- Sys.time()
   dir.create(file.path(method_out, "QC_plots"), showWarnings = FALSE, recursive = TRUE)
 
   result <- tryCatch({
@@ -549,6 +623,9 @@ for (method in CORRECTION_METHODS) {
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
     message("Skipping.")
+    run_log <<- log_method_result(run_log, method, "failed",
+                                   as.numeric(difftime(Sys.time(), method_start, units = "secs")),
+                                   error = conditionMessage(e))
     NULL
   })
 
@@ -603,12 +680,12 @@ for (method in CORRECTION_METHODS) {
   # workbooks for a given SE.
   write_outputs <- function(se, suffix, feature_set_label) {
     settings_df <- method_settings_df(feature_set_label)
-    write_results_workbook(se, msdial_annotations, settings_df,
+    write_results_workbook(se, feature_annotations, settings_df,
                             file = file.path(method_out, paste0("results_full", suffix, ".xlsx")))
     se_c <- tryCatch(compress_clusters(cluster_features(se, all_features = TRUE)),
                      error = function(e) { message("WARNING: clustering failed: ", conditionMessage(e)); NULL })
     if (!is.null(se_c)) {
-      write_results_workbook(se_c, msdial_annotations, settings_df,
+      write_results_workbook(se_c, feature_annotations, settings_df,
                               file = file.path(method_out, paste0("results_clustered", suffix, ".xlsx")))
     }
   }
@@ -635,8 +712,20 @@ for (method in CORRECTION_METHODS) {
                     sprintf("Per-batch QC RSD < %.0f%% in >= 50%% of batches", RSD_THRESHOLD * 100))
     }, error = function(e) message("WARNING: batchwise RSD filter export failed (", method, "): ", conditionMessage(e)))
   }
+
+  run_log <- log_method_result(run_log, method, "success",
+                                as.numeric(difftime(Sys.time(), method_start, units = "secs")),
+                                n_features = nrow(combined))
 }
 
+run_log_df <- write_run_log(run_log, interdir)
+
 compare_corrections(interdir, output_dir)
+
+primary_input <- if (input_mode == "xcms") in_feature_table else in_xlsx
+tryCatch(
+  write_run_report(interdir, output_dir, mode_label, primary_input, run_params_df, run_log_df),
+  error = function(e) message("WARNING: report generation failed: ", conditionMessage(e))
+)
 
 message("==> FINISHED. Output at: ", output_dir)

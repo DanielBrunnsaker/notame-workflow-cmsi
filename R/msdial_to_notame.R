@@ -10,12 +10,15 @@
 # Derived metadata:
 #   Sample_ID       <- NAME part of filename
 #   Injection_order <- leading digits of the last underscore-delimited part
-#   QC              <- "QC" if NAME contains "sQC", "Blank" if contains "blank",
-#                      else "Sample", ... 
+#   QC              <- classified from NAME via DEFAULT_SAMPLE_TYPE_RULES
+#                      (R/config.R), e.g. "QC" if NAME contains "sQC", "Blank"
+#                      if it contains "SolvBlank", else "Sample". Overridable
+#                      per-project via sample_type_rules (CONFIG_FILE).
 #   Batch           <- first digit(s) after "B" in BATCH  (B1-2W4 -> 1, B3W5 -> 3) - make this more reliable!
 #   <mode>_Datafile <- full original MSDIAL filename
 # ─────────────────────────────────────────────────────────────────────────────
-msdial_to_notame <- function(in_xlsx, out_xlsx) {
+msdial_to_notame <- function(in_xlsx, out_xlsx, sample_type_rules = NULL) {
+  qc_rules <- if (is.null(sample_type_rules)) DEFAULT_SAMPLE_TYPE_RULES else sample_type_rules
 
   # Read raw file (no headers, everything as strings) 
   raw <- read.xlsx(in_xlsx, sheet = 1, colNames = FALSE, rowNames = FALSE)
@@ -84,25 +87,21 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
   parsed <- lapply(sample_fns, parse_fn)
 
   # MSe/MS2 detected from the middle section (between batch and POS/NEG),
-  # not from the sample name. All other types detected from sample name.
-
-  # Make this a bit more reliable if there is intention to automate this?
-  classify_qc <- function(name, is_mse = FALSE, is_ms2 = FALSE) {
-    if (is_mse)                                         return("MSe")
-    if (is_ms2)                                         return("MS2")
-    if (grepl("SST\\d",     name, ignore.case = TRUE))  return("SST")
-    if (grepl("ltQC",       name, ignore.case = TRUE))  return("ltQC")
-    if (grepl("sQC",        name, ignore.case = TRUE))  return("QC")
-    if (grepl("MeOH",       name, ignore.case = TRUE))  return("Wash")
-    if (grepl("SolvBlank",  name, ignore.case = TRUE))  return("Blank")
-    if (grepl("blank",      name, ignore.case = TRUE))  return("MatrixBlank")
-    if (grepl("CondPlasma", name, ignore.case = TRUE))  return("Cond")
+  # not from the sample name (structural, so not part of the configurable
+  # keyword rules below). All other types detected from sample name via
+  # `rules` — first pattern match wins, falling back to "Sample".
+  classify_qc <- function(name, is_mse = FALSE, is_ms2 = FALSE, rules = DEFAULT_SAMPLE_TYPE_RULES) {
+    if (is_mse) return("MSe")
+    if (is_ms2) return("MS2")
+    for (r in rules) {
+      if (grepl(r$pattern, name, ignore.case = TRUE)) return(r$type)
+    }
     "Sample"
   }
 
   sample_id  <- sapply(parsed, `[[`, "name")
   inj_order  <- sapply(parsed, `[[`, "injection_order")
-  qc         <- sapply(parsed, function(p) classify_qc(p$name, p$is_mse, p$is_ms2))
+  qc         <- sapply(parsed, function(p) classify_qc(p$name, p$is_mse, p$is_ms2, rules = qc_rules))
   batch      <- sapply(parsed, function(p) p$batch)
 
   # Unique sample IDs derived from the filename.
@@ -156,25 +155,15 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     as.character(vals)
   })
 
-  # Assemble notame output layout
-  N_FEAT <- 11 # number of feature metadata columns (must match feat_header length)
-
-  meta_row <- function(label, values)
-    c(rep(NA_character_, N_FEAT - 1), label, as.character(values))
-
+  # Assemble notame output layout (shared contract — see R/notame_format.R)
   meta_block <- rbind(
-    meta_row("Sample_ID",                    col_ids),
-    meta_row("Injection_order",              global_run_order),
-    meta_row("QC",                           qc),
-    meta_row("Batch",                        batch),
-    meta_row("Original_name",               sample_id_unique),
-    meta_row(paste0(mode_name, "_Datafile"), sample_fns)
+    notame_meta_row("Sample_ID",                    col_ids),
+    notame_meta_row("Injection_order",              global_run_order),
+    notame_meta_row("QC",                           qc),
+    notame_meta_row("Batch",                        batch),
+    notame_meta_row("Original_name",               sample_id_unique),
+    notame_meta_row(paste0(mode_name, "_Datafile"), sample_fns)
   )
-
-  feat_header <- c("Feature_ID", "Split", "Alignment", "Average_Mz",
-                   "Average_Rt_min", "Column", "Ion_mode", "Adduct_type", "Metabolite_name",
-                   "Fill_pct", "Flag",
-                   col_ids)
 
   feat_data_mat <- cbind(
     feature_ids,
@@ -191,12 +180,8 @@ msdial_to_notame <- function(in_xlsx, out_xlsx) {
     as.matrix(abund_mat)
   )
 
-  out_mat <- rbind(meta_block, feat_header, feat_data_mat)
-  out_df  <- as.data.frame(out_mat, stringsAsFactors = FALSE)
-
-  # Write notame-formatted file
-  write.xlsx(out_df, out_xlsx, colNames = FALSE, rowNames = FALSE)
-  message("notame-ready file written: ", out_xlsx, " (mode: ", mode_name, ")")
+  write_notame_format(meta_block, feat_data_mat, col_ids, out_xlsx)
+  message("(mode: ", mode_name, ")")
 
   # Build full MSDIAL annotations table (returned for per-method writing in workflow)
   annot_col_idx <- which(!is_sample & !is.na(hdr) & nchar(trimws(hdr)) > 0)

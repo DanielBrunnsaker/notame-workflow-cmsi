@@ -1,0 +1,48 @@
+# Example configuration for notame-workflow-cmsi.
+# Copy this file, edit the values you need, and point CONFIG_FILE at it:
+#
+#   docker run --rm -v /path/to/data:/data -v /path/to/output:/processed \
+#     -e CONFIG_FILE=/data/config.yaml your-image-name
+#
+# Any value here can still be overridden by an environment variable of the
+# same name for one-off tweaks — env vars always win over this file.
+
+# ── Required ──────────────────────────────────────────────────────────────
+IN_XLSX: /data/msdial_export.xlsx
+PROJECT_FOLDER: /processed
+COLUMN: RP
+POLARITY: POS
+
+# ── Common optional overrides (all have defaults — see README) ────────────
+CORRECTION_METHODS: pmp_qcrsc,notame
+QC_DETECTION_LIMIT: 0.60
+SAMPLE_DETECTION_LIMIT: 0.20
+RSD_THRESHOLD: 0.30
+NORMALIZATION: none
+
+# ── Sample-type classification override ─────────────────────────────────────
+# Optional. Overrides the built-in filename-keyword rules used to classify
+# each sample as QC / ltQC / Blank / Wash / Cond / SST / Sample. Rules are
+# tried top-to-bottom against the sample name (case-insensitive); the first
+# match wins, and anything unmatched falls back to "Sample". If given, this
+# list REPLACES the built-in defaults entirely (rather than extending them),
+# so only list the keywords your lab actually uses.
+#
+# Built-in defaults (for reference):
+#   SST\d       -> SST
+#   ltQC        -> ltQC
+#   sQC         -> QC
+#   MeOH        -> Wash
+#   SolvBlank   -> Blank
+#   blank       -> MatrixBlank
+#   CondPlasma  -> Cond
+#
+# sample_type_rules:
+#   - pattern: "PoolQC"
+#     type: QC
+#   - pattern: "LongTermQC"
+#     type: ltQC
+#   - pattern: "^Blank_"
+#     type: Blank
+#   - pattern: "Wash"
+#     type: Wash

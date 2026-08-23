@@ -1,18 +1,18 @@
 # notame-workflow-cmsi
 
-Post-MSDIAL preprocessing pipeline for untargeted LC-MS metabolomics data. Converts MSDIAL alignment exports to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel.
+Preprocessing pipeline for untargeted LC-MS metabolomics data. Converts a MSDIAL alignment export or an XCMS-based feature table + sample sheet to a standardised format, applies feature quality filters, and evaluates multiple drift and batch correction strategies in parallel.
 
 Built around the [notame](https://github.com/antonvsdata/notame) R package.
 
 ## Overview
 
-1. **MSDIAL conversion** — parses MSDIAL alignment exports, extracts sample metadata from filenames, and converts to notame-compatible format. Sample filenames must follow the format: `DATE_BATCH_COLUMN_POLARITY_SAMPLENAME_INJECTIONNUMBER`
+1. **Conversion** — either parses a MSDIAL alignment export, extracting sample metadata from filenames (format: `DATE_BATCH_COLUMN_POLARITY_SAMPLENAME_INJECTIONNUMBER`), or reads an XCMS-based feature table + sample sheet, which already carries structured sample metadata — see [XCMS input](#xcms-input) below. Either way, the result is converted to notame-compatible format.
 2. **Feature filtering** — sequential pre-correction filters to remove low-quality features
 3. **Drift and batch correction** — one or more correction methods run in parallel, each saved to its own output folder
 4. **Imputation** — two-step: LoD/2 (half-minimum per batch) fills missing values before correction algorithms that require a complete matrix; random forest imputation is then applied after full correction on originally-missing positions only
 5. **QC metrics and comparison** — per-method quality metrics computed and compared in a summary table
 6. **Feature clustering** — correlated features (e.g. isotopes, adducts) are grouped and compressed to one representative per cluster using notame's `cluster_features` / `compress_clusters`. Both the full unclustered and clustered outputs are retained.
-7. **Output** — feature tables, MSDIAL annotations, and QC plots per method
+7. **Output** — feature tables, source-pipeline annotations, and QC plots per method
 
 ## Requirements
 
@@ -22,7 +22,7 @@ Docker (recommended), or R 4.5+ with dependencies managed via `renv`.
 
 ### Docker
 
-`IN_XLSX`, `PROJECT_FOLDER`, `COLUMN`, and `POLARITY` are all required. All other parameters are optional with defaults.
+`PROJECT_FOLDER`, `COLUMN`, and `POLARITY` are required, plus one input: either `IN_XLSX` (MSDIAL), or `IN_FEATURE_TABLE` + `IN_SAMPLE_SHEET` (XCMS — see [XCMS input](#xcms-input)). All other parameters are optional with defaults.
 
 ```bash
 docker run --rm \
@@ -74,13 +74,127 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
 Rscript notame-workflow.r --help
 ```
 
+## Configuration file
+
+Any parameter below can also be supplied via a YAML config file instead of
+an environment variable — handy for avoiding long `docker run -e ...` chains
+or checking a run's settings into version control. Point `CONFIG_FILE` at
+the file:
+
+```bash
+docker run --rm \
+  -v /path/to/data:/data \
+  -v /path/to/output:/processed \
+  -e CONFIG_FILE=/data/config.yaml \
+  your-image-name
+```
+
+**Precedence:** env vars win over the config file when both set the same
+parameter, so one-off Docker overrides keep working unchanged on top of a
+shared config file. `IN_XLSX`, `PROJECT_FOLDER`, `COLUMN`, and `POLARITY`
+can all come from the config file too — a config file alone is enough to
+run the pipeline.
+
+See [`config.example.yaml`](config.example.yaml) for a full worked example.
+
+```yaml
+IN_XLSX: /data/msdial_export.xlsx
+PROJECT_FOLDER: /processed
+COLUMN: RP
+POLARITY: POS
+CORRECTION_METHODS: pmp_qcrsc,notame
+QC_DETECTION_LIMIT: 0.60
+```
+
+### Sample-type classification override
+
+Sample type (QC / ltQC / Blank / Wash / Cond / SST / Sample) is normally
+inferred from filename keywords (see [Sample types](#sample-types) below).
+Labs using different naming conventions can override this via
+`sample_type_rules` in the config file — an ordered list of `pattern`/`type`
+pairs, tried top-to-bottom against the sample name (case-insensitive), first
+match wins, anything unmatched falls back to `Sample`. This list **replaces**
+the built-in defaults entirely when given, rather than extending them.
+(This applies to the MSDIAL input path only — see [XCMS input](#xcms-input)
+for how sample type is determined for XCMS-based input.)
+
+```yaml
+sample_type_rules:
+  - pattern: "PoolQC"
+    type: QC
+  - pattern: "LongTermQC"
+    type: ltQC
+  - pattern: "^Blank_"
+    type: Blank
+```
+
+## XCMS input
+
+As an alternative to a MSDIAL alignment export, the pipeline accepts output
+from an XCMS-based pipeline: a feature table CSV (`IN_FEATURE_TABLE`) plus a
+sample sheet XLSX (`IN_SAMPLE_SHEET`). Set both (env var or config file) instead
+of `IN_XLSX` — exactly one of the two input methods must be given.
+
+```bash
+docker run --rm \
+  -v /path/to/data:/data \
+  -v /path/to/output:/processed \
+  -e IN_FEATURE_TABLE=/data/feature_table.csv \
+  -e IN_SAMPLE_SHEET=/data/sample_sheet.xlsx \
+  -e PROJECT_FOLDER=/processed \
+  -e COLUMN=RP \
+  -e POLARITY=NEG \
+  your-image-name
+```
+
+Unlike MSDIAL exports, this pipeline already carries structured sample
+metadata (no filename parsing needed) and the two files are joined by
+**`sample_label`** — every abundance column in the feature table must be
+headed by a value from the sample sheet's `sample_label` column.
+
+**`IN_FEATURE_TABLE`** (csv) must have: `feature`, `mzmed`, `rtmed`,
+`npeaks`, plus one abundance column per sample (headed by `sample_label`).
+`mzmin`/`mzmax`/`rtmin`/`rtmax`/`ms_level` and any per-type detection-count
+columns are carried through into the output but not required.
+
+**`IN_SAMPLE_SHEET`** (xlsx) must have: `batch`, `column`, `polarity`,
+`sample_label`, `sample_type`, `injection_order`, `filename`, `include`.
+Rows are filtered to `include == TRUE` and to the requested `COLUMN`/
+`POLARITY` (case-insensitive); the run fails with a clear error if nothing
+matches. A row with `needs_review == TRUE` that's still included triggers a
+warning rather than being dropped.
+
+`sample_type` is mapped to the pipeline's internal QC vocabulary via a
+built-in table (not config-overridable, since this field is already an
+authoritative typed value rather than a filename guess):
+
+| sample_type | → | Internal type |
+|---|---|---|
+| `Sample` | → | `Sample` |
+| `sQC`, `QC` | → | `QC` |
+| `ltQC` | → | `ltQC` |
+| `Blank` | → | `Blank` |
+| `MatrixBlank` | → | `MatrixBlank` |
+| `Wash` | → | `Wash` |
+| `Cond` | → | `Cond` |
+| `SST` | → | `SST` |
+| anything else | → | `Sample` |
+
+Since this pipeline doesn't produce metabolite annotations, the
+`Adduct_type`/`Metabolite_name` output columns are left blank for XCMS runs;
+`Fill_pct` is computed from `npeaks` (features actually detected) as a
+directly analogous substitute.
+
 ## Key parameters
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `IN_XLSX` | Yes | — | Path to MSDIAL alignment export (.xlsx) |
+| `CONFIG_FILE` | No | — | Path to an optional YAML config file supplying defaults for any parameter in this table (env vars still take precedence — see [Configuration file](#configuration-file)) |
+| `IN_XLSX` | Yes\* | — | Path to MSDIAL alignment export (.xlsx). \*Required unless `IN_FEATURE_TABLE`+`IN_SAMPLE_SHEET` are set instead |
+| `IN_FEATURE_TABLE` | Yes\* | — | Path to an XCMS-based feature table (.csv) — alternative to `IN_XLSX`, see [XCMS input](#xcms-input) |
+| `IN_SAMPLE_SHEET` | Yes\* | — | Path to the XCMS pipeline's sample sheet (.xlsx) — required together with `IN_FEATURE_TABLE` |
 | `PROJECT_FOLDER` | Yes | — | Root output directory |
-| `FORCE_RECONVERT` | No | `FALSE` | Force re-running the MSDIAL conversion step even if a cached result from a previous run is found |
+| `FORCE_RECONVERT` | No | `FALSE` | Force re-running the conversion step even if a cached result from a previous run is found |
 | `COLUMN` | Yes | — | Chromatographic column type (e.g. `RP`, `HILIC`) |
 | `POLARITY` | Yes | — | Ionisation polarity (`POS` / `NEG`) |
 | `CORRECTION_METHODS` | No | `none,notame` | Comma-separated list of methods to run (see below) |
@@ -135,8 +249,9 @@ PQN corrects for differences in overall sample concentration or dilution, and is
 output/
   {COLUMN}_{POLARITY}/              e.g. RP_POS, HILIC_NEG
     sample_metadata.csv
-    correction_comparison.csv
+    method_comparison.csv           # cross-method QC comparison, best-first
     raw_reference.csv
+    report.html                     # single-page run summary — start here
     pre_correction/
       QC_plots/
     {method}/
@@ -146,14 +261,23 @@ output/
       results_clustered_rsdXX.xlsx
       results_full_batchrsdXX.xlsx            # above, with per-batch QC RSD < XX% in >= 50% of batches
       results_clustered_batchrsdXX.xlsx
+      batch_summary_post_correction.csv
       QC_plots/
 intermediates/
   {COLUMN}_{POLARITY}/
     notame_rev.xlsx                 # notame-formatted intermediate
-    msdial_annotations.rds          # cached MSDIAL conversion result (mode + annotations)
+    conversion_annotations.rds      # cached conversion result (mode + annotations)
     prefilter_log.csv               # feature counts after each filter step
+    batch_summary.csv               # pre-correction per-batch missingness/QC-RSD
+    run_log.csv                     # per-method success/failure, timing, feature count
     run_parameters.txt              # all parameter values used
 ```
+
+`report.html` is a self-contained, single-page summary of the run — run
+parameters, pre-filtering counts, batch quality, the run log, the
+cross-method comparison, and the QC plots (pre- and post-correction) — open
+it in a browser as a starting point before digging into individual
+workbooks.
 
 The `XX` in output filenames reflects `RSD_THRESHOLD` (e.g. `_rsd30` at default, `_rsd40` if `RSD_THRESHOLD=0.40`).
 
@@ -162,7 +286,7 @@ Each `results*.xlsx` workbook contains:
 | Sheet | Contents |
 |---|---|
 | `Peak_table` | Feature abundance matrix (rows = features, columns = samples) |
-| `Feature_metadata` | mz, rt, adduct, QC metrics (RSD, D_ratio), and a curated subset of MSDIAL annotations (metabolite name, fill %, S/N) merged by feature |
+| `Feature_metadata` | mz, rt, adduct, QC metrics (RSD, D_ratio), and a curated subset of the source pipeline's annotations (metabolite name, fill %, S/N — MSDIAL input only, blank for XCMS input) merged by feature |
 | `Cluster_info` | Cluster ID, member features, cluster size, and MPA — only present in `results_clustered*.xlsx` workbooks |
 | `Settings` | Run parameters, correction method, feature-set filter applied, and versions of all loaded packages |
 
