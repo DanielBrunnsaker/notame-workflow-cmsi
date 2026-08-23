@@ -16,7 +16,12 @@
 #                        notame's Average_Rt_min.
 #   sample_sheet_xlsx  — XLSX with (at least): batch, column, polarity,
 #                        sample_label, sample_type, injection_order, filename,
-#                        include.
+#                        include. sample_label must be unique across the
+#                        samples being processed (it's the join key into the
+#                        feature table) — e.g. include the batch in it if the
+#                        same plate-relative label (like "sQC01") recurs
+#                        across batches. A duplicate errors out rather than
+#                        being silently (and ambiguously) resolved.
 #
 # Derived metadata (mirrors msdial_to_notame(), see that file for the
 # filename-parsing equivalent used on the MSDIAL side):
@@ -24,7 +29,7 @@
 #   Injection_order <- global rank of (batch, injection_order)
 #   QC              <- sample_type mapped via DEFAULT_XCMS_SAMPLE_TYPE_MAP,
 #                      falling back to "Sample" for anything unrecognized
-#   Original_name   <- "{batch}_{sample_label}" (uniqueness across batches)
+#   Original_name   <- sample sheet's `sample_label` column, used as-is
 #   <mode>_Datafile <- sample sheet's `filename` column
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -82,11 +87,27 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
 
   # Identify sample columns in the feature table by matching sample_label —
   # unlike MSDIAL there's no fixed filename convention to pattern-match, so
-  # the sheet's sample_label is the join key.
+  # the sheet's sample_label is the join key. It must be unique among the
+  # samples being processed: a duplicate can't be disambiguated by name
+  # alone (e.g. which batch's "PlateX-sQC01" column is it?), and matching
+  # by name would otherwise silently keep only the first occurrence and
+  # drop the rest — exactly the kind of silent data loss this checks for.
+  dup_labels <- unique(sheet$sample_label[duplicated(sheet$sample_label)])
+  if (length(dup_labels) > 0)
+    stop("sample_sheet has duplicate sample_label value(s) after filtering to COLUMN=", column,
+         ", POLARITY=", polarity, ": ", paste(dup_labels, collapse = ", "),
+         ". sample_label must be unique across the samples being processed (e.g. include the ",
+         "batch in it) since it is the join key into the feature table.")
+
   sample_cols <- intersect(colnames(ft), sheet$sample_label)
   if (length(sample_cols) == 0)
     stop("No feature_table columns match any sample_sheet$sample_label for COLUMN=",
          column, ", POLARITY=", polarity)
+
+  dup_ft_cols <- intersect(unique(colnames(ft)[duplicated(colnames(ft))]), sample_cols)
+  if (length(dup_ft_cols) > 0)
+    stop("feature_table has duplicate column name(s) among the matched samples: ",
+         paste(dup_ft_cols, collapse = ", "), ". Each sample column must be uniquely named.")
 
   sheet <- sheet[match(sample_cols, sheet$sample_label), , drop = FALSE]  # align to sample_cols order
 
@@ -99,7 +120,7 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
   global_run_order[ord] <- seq_along(ord)
 
   qc_type       <- ifelse(sheet$sample_type %in% names(type_map), type_map[sheet$sample_type], "Sample")
-  original_name <- paste0(sheet$batch, "_", sheet$sample_label)
+  original_name <- sheet$sample_label  # unique by construction (checked above)
 
   mode_name <- paste0(column, "_", tolower(polarity))
   col_ids   <- sprintf("%s_%03d", mode_name, seq_along(sample_cols))

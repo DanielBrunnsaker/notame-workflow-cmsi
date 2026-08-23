@@ -152,6 +152,13 @@ metadata (no filename parsing needed) and the two files are joined by
 **`sample_label`** — every abundance column in the feature table must be
 headed by a value from the sample sheet's `sample_label` column.
 
+**`sample_label` must be unique** across the samples being processed (it's
+the join key, and becomes `Original_name` in the output as-is). If your
+naming convention reuses a plate-relative label per batch (e.g. `sQC01` in
+every batch), include the batch in the label itself (e.g. `B10W22-sQC01`)
+so it's unique — a duplicate is rejected with a clear error rather than
+silently dropping the extra samples.
+
 **`IN_FEATURE_TABLE`** (csv) must have: `feature`, `mzmed`, `rtmed`,
 `npeaks`, plus one abundance column per sample (headed by `sample_label`).
 `mzmin`/`mzmax`/`rtmin`/`rtmax`/`ms_level` and any per-type detection-count
