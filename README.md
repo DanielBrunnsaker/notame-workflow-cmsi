@@ -155,7 +155,9 @@ headed by a value from the sample sheet's `sample_label` column.
 **`IN_FEATURE_TABLE`** (csv) must have: `feature`, `mzmed`, `rtmed`,
 `npeaks`, plus one abundance column per sample (headed by `sample_label`).
 `mzmin`/`mzmax`/`rtmin`/`rtmax`/`ms_level` and any per-type detection-count
-columns are carried through into the output but not required.
+columns are carried through into the output but not required. `rtmed`/
+`rtmin`/`rtmax` are assumed to be in **seconds** (XCMS's own convention) and
+are converted to minutes to match notame's `Average_Rt_min`.
 
 **`IN_SAMPLE_SHEET`** (xlsx) must have: `batch`, `column`, `polarity`,
 `sample_label`, `sample_type`, `injection_order`, `filename`, `include`.

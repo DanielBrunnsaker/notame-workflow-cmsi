@@ -11,6 +11,9 @@
 #                        rtmin, rtmax, npeaks, <per-type detection counts>,
 #                        ms_level, then one abundance column per sample,
 #                        HEADED BY sample_label (the join key into the sheet).
+#                        rtmed/rtmin/rtmax are assumed to be in SECONDS (XCMS's
+#                        own convention) and are converted to minutes to match
+#                        notame's Average_Rt_min.
 #   sample_sheet_xlsx  — XLSX with (at least): batch, column, polarity,
 #                        sample_label, sample_type, injection_order, filename,
 #                        include.
@@ -43,6 +46,14 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
 
   sheet <- read.xlsx(sample_sheet_xlsx, sheet = 1)
   ft    <- read.csv(feature_table_csv, check.names = FALSE, stringsAsFactors = FALSE)
+
+  # XCMS reports retention time in seconds; notame's Average_Rt_min (like
+  # MSDIAL's own "Average Rt(min)") expects minutes, and import_from_excel()
+  # rejects out-of-range values otherwise. Converted once here so every
+  # downstream use (Feature_ID, Average_Rt_min, retained annotations) agrees.
+  ft$rtmed <- ft$rtmed / 60
+  if ("rtmin" %in% colnames(ft)) ft$rtmin <- ft$rtmin / 60
+  if ("rtmax" %in% colnames(ft)) ft$rtmax <- ft$rtmax / 60
 
   required_sheet_cols <- c("batch", "column", "polarity", "sample_label", "sample_type",
                             "injection_order", "filename", "include")
