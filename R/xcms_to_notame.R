@@ -14,7 +14,7 @@
 #                        rtmed/rtmin/rtmax are assumed to be in SECONDS (XCMS's
 #                        own convention) and are converted to minutes to match
 #                        notame's Average_Rt_min.
-#   sample_sheet_xlsx  — XLSX with (at least): batch, column, polarity,
+#   sample_sheet_xlsx  — XLSX with (at least): batch_plate, column, polarity,
 #                        sample_label, sample_type, injection_order, filename,
 #                        include. sample_label must be unique across the
 #                        samples being processed (it's the join key into the
@@ -25,8 +25,10 @@
 #
 # Derived metadata (mirrors msdial_to_notame(), see that file for the
 # filename-parsing equivalent used on the MSDIAL side):
-#   Batch           <- sample sheet's `batch` column, used as-is
-#   Injection_order <- global rank of (batch, injection_order)
+#   Batch           <- sample sheet's `batch_plate` column, used as-is (not
+#                      `batch` — a nominal batch can span multiple plates,
+#                      and correction should key off that finer grouping)
+#   Injection_order <- global rank of (batch_plate, injection_order)
 #   QC              <- sample_type mapped via DEFAULT_XCMS_SAMPLE_TYPE_MAP,
 #                      falling back to "Sample" for anything unrecognized
 #   Original_name   <- sample sheet's `sample_label` column, used as-is
@@ -60,7 +62,7 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
   if ("rtmin" %in% colnames(ft)) ft$rtmin <- ft$rtmin / 60
   if ("rtmax" %in% colnames(ft)) ft$rtmax <- ft$rtmax / 60
 
-  required_sheet_cols <- c("batch", "column", "polarity", "sample_label", "sample_type",
+  required_sheet_cols <- c("batch_plate", "column", "polarity", "sample_label", "sample_type",
                             "injection_order", "filename", "include")
   missing_cols <- setdiff(required_sheet_cols, colnames(sheet))
   if (length(missing_cols) > 0)
@@ -111,11 +113,11 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
 
   sheet <- sheet[match(sample_cols, sheet$sample_label), , drop = FALSE]  # align to sample_cols order
 
-  # Global run order: rank by (batch, injection_order), same approach as
-  # msdial_to_notame() — robust whether injection_order is locally- or
+  # Global run order: rank by (batch_plate, injection_order), same approach
+  # as msdial_to_notame() — robust whether injection_order is locally- or
   # globally-scoped in the sheet.
   injection_order  <- suppressWarnings(as.numeric(sheet$injection_order))
-  ord              <- order(sheet$batch, injection_order)
+  ord              <- order(sheet$batch_plate, injection_order)
   global_run_order <- integer(nrow(sheet))
   global_run_order[ord] <- seq_along(ord)
 
@@ -130,7 +132,7 @@ xcms_to_notame <- function(feature_table_csv, sample_sheet_xlsx, out_xlsx,
     notame_meta_row("Sample_ID",                    col_ids),
     notame_meta_row("Injection_order",              global_run_order),
     notame_meta_row("QC",                           qc_type),
-    notame_meta_row("Batch",                        sheet$batch),
+    notame_meta_row("Batch",                        sheet$batch_plate),
     notame_meta_row("Original_name",               original_name),
     notame_meta_row(paste0(mode_name, "_Datafile"), sheet$filename)
   )

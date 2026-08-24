@@ -166,12 +166,14 @@ columns are carried through into the output but not required. `rtmed`/
 `rtmin`/`rtmax` are assumed to be in **seconds** (XCMS's own convention) and
 are converted to minutes to match notame's `Average_Rt_min`.
 
-**`IN_SAMPLE_SHEET`** (xlsx) must have: `batch`, `column`, `polarity`,
+**`IN_SAMPLE_SHEET`** (xlsx) must have: `batch_plate`, `column`, `polarity`,
 `sample_label`, `sample_type`, `injection_order`, `filename`, `include`.
-Rows are filtered to `include == TRUE` and to the requested `COLUMN`/
-`POLARITY` (case-insensitive); the run fails with a clear error if nothing
-matches. A row with `needs_review == TRUE` that's still included triggers a
-warning rather than being dropped.
+`batch_plate` (not `batch`) is used as the batch grouping for drift/batch
+correction, since a nominal batch can span multiple plates. Rows are
+filtered to `include == TRUE` and to the requested `COLUMN`/`POLARITY`
+(case-insensitive); the run fails with a clear error if nothing matches. A
+row with `needs_review == TRUE` that's still included triggers a warning
+rather than being dropped.
 
 `sample_type` is mapped to the pipeline's internal QC vocabulary via a
 built-in table (not config-overridable, since this field is already an
