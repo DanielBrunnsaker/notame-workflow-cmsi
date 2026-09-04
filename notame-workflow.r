@@ -95,7 +95,7 @@ if both are set for the same parameter.
                         Default: none,notame
                         Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
                                  batchcorr | combat_only | loess_combat | loess_samples_combat |
-                                 loess_limma | loess_feature_median | loess_global_median |
+                                 loess_limma | loess_samples_limma | loess_feature_median | loess_global_median |
                                  cordbat_only | loess_cordbat | waveica
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
@@ -152,16 +152,18 @@ if both are set for the same parameter.
                         conservative correction.
                         Default: 0.75
 
-  LOESS_SAMPLE_SPAN     LOESS smoothing span for QC-free drift correction (loess_samples_combat),
-                        fit on biological samples instead of QC. Wider than LOESS_SPAN by default
-                        since each point is a unique biological measurement, not a technical
-                        replicate — a tighter span risks fitting individual-sample noise as drift.
+  LOESS_SAMPLE_SPAN     LOESS smoothing span for QC-free drift correction (loess_samples_combat,
+                        loess_samples_limma), fit on biological samples instead of QC. Wider than
+                        LOESS_SPAN by default since each point is a unique biological measurement,
+                        not a technical replicate — a tighter span risks fitting individual-sample
+                        noise as drift.
                         Default: 0.9
 
   LOESS_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt
-                        QC-free drift correction (loess_samples_combat). Deliberately higher than
-                        the QC-based fit's threshold of 4, since sample points are far noisier.
-                        Features below this are left uncorrected for that batch.
+                        QC-free drift correction (loess_samples_combat, loess_samples_limma).
+                        Deliberately higher than the QC-based fit's threshold of 4, since sample
+                        points are far noisier. Features below this are left uncorrected for that
+                        batch.
                         Default: 10
 
   CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
@@ -251,6 +253,8 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "combat_only"         — ComBat batch correction only (no drift correction)
 #   "loess_combat"        — per-batch LOESS drift correction (QC-based) + ComBat batch correction
 #   "loess_samples_combat" — per-batch LOESS drift correction (QC-free, fit on samples) + ComBat
+#   "loess_limma"         — per-batch LOESS drift correction (QC-based) + limma removeBatchEffect
+#   "loess_samples_limma" — per-batch LOESS drift correction (QC-free, fit on samples) + limma removeBatchEffect
 #   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
 #   "loess_cordbat"       — per-batch LOESS drift correction + CordBat batch correction
 #   "waveica"             — WaveICA 2.0 wavelet-based correction
@@ -613,12 +617,13 @@ for (method in CORRECTION_METHODS) {
       loess_combat        = correct_loess_combat(data, LOESS_SPAN),
       loess_samples_combat = correct_loess_samples_combat(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
+      loess_samples_limma = correct_loess_samples_limma(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
       loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))

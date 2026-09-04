@@ -348,10 +348,59 @@ correct_loess_limma <- function(data, loess_span) {
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
     message("==> Between-batch correction (limma removeBatchEffect)")
-    mat <- removeBatchEffect(x = assay(combined, 1), batch = as.factor(colData(combined)$Batch))
-    mat[mat < 0] <- NA
-    assay(combined, 1, withDimnames = FALSE) <- mat
+    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
+      x     = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+correct_loess_samples_limma <- function(data, loess_span, loess_min_obs) {
+  suppressPackageStartupMessages(library(limma))
+
+  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
+  message("==> Drift correction (QC-free LOESS on biological samples)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch_samples(se_b, span = loess_span, min_obs = loess_min_obs)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before limma which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (limma removeBatchEffect)")
+    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
+      x     = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
   }
 
   message("==> Imputation (RF on corrected data)")
