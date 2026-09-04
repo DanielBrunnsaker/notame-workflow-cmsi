@@ -37,6 +37,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   min_qc_sample_detection, min_batch_detection,
                                   rsd_threshold, ruv_k, serrf_num, loess_span,
                                   loess_sample_span, loess_sample_min_obs,
+                                  loess_min_qc_per_batch, loess_min_ltqc_validate,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
                                   save_pre_correction_plots,
                                   config_file = "", raw_sample_type_rules = NULL) {
@@ -124,6 +125,8 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "RUV_K",                  ruv_k,                  min = 1)
   problems <- check_numeric(problems, "SERRF_NUM",               serrf_num,              min = 1)
   problems <- check_numeric(problems, "LOESS_SAMPLE_MIN_OBS",    loess_sample_min_obs,   min = 4)
+  problems <- check_numeric(problems, "LOESS_MIN_QC_PER_BATCH",  loess_min_qc_per_batch, min = 1)
+  problems <- check_numeric(problems, "LOESS_MIN_LTQC_VALIDATE", loess_min_ltqc_validate, min = 2)
 
   # Numeric parameters: optional (NA means disabled)
   problems <- check_numeric(problems, "BLANK_RATIO",    blank_ratio,    min = 0,           allow_na = TRUE)

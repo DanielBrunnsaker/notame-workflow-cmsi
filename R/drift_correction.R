@@ -5,6 +5,8 @@
 # process_batch()                — notame cubic spline drift correction wrapper
 # loess_correct_batch()          — QC-based LOESS drift correction
 # loess_correct_batch_samples()  — QC-free LOESS drift correction (fit on biological samples)
+# loess_correct_batch_hybrid()   — per-batch: QC-based if enough QC, else samples-based
+#                                   trial validated against ltQC (kept only if it helps), else uncorrected
 
 split_by_batch <- function(se) {
   batches <- unique(colData(se)$Batch)
@@ -76,6 +78,78 @@ loess_correct_batch <- function(se_b, span = 0.75) {
 
   assay(se_b, 1, withDimnames = FALSE) <- mat
   se_b
+}
+
+
+# Per-batch hybrid drift correction:
+#   1. Enough QC (>= min_qc_per_batch)   -> QC-anchored LOESS (loess_correct_batch).
+#      Preferred whenever possible — it derives the drift curve from technical
+#      replicates rather than biological samples, so it doesn't risk removing
+#      real biological signal along with drift (see loess_correct_batch_samples's
+#      documentation).
+#   2. Not enough QC, but enough ltQC (>= min_ltqc_validate) to check the result
+#      -> trial the QC-free samples-based fit (loess_correct_batch_samples), then
+#      keep it only if it measurably improves the ltQC/Sample D-ratio
+#      (eval_ltqc_dratio = MAD(ltQC)/MAD(Sample), from R/qc_metrics.R) in that
+#      batch; otherwise revert to the uncorrected values. ltQC is never used to
+#      fit the samples-based correction, so this is a genuine held-out check
+#      rather than a circular one. D-ratio (not raw ltQC RSD) is the right test
+#      here: any real drift correction shrinks measured sample variance somewhat
+#      (removing genuine drift noise does that even when biological signal is
+#      fully preserved), so "sample variance must not shrink" would reject
+#      working corrections too. D-ratio only credits a *disproportionate*
+#      shrink in ltQC relative to Sample — proportional shrinkage in both
+#      (shared drift removed cleanly) leaves the ratio roughly flat, while
+#      Sample shrinking as much as or more than ltQC (real signal being
+#      removed) leaves it unimproved or worse.
+#   3. Neither -> leave the batch uncorrected; there is no data to validate a
+#      QC-free fit against, and an unverifiable correction is worse than none.
+# QC coverage (and ltQC coverage) can vary batch to batch even within one
+# dataset (e.g. a plate with zero QC injections), so the choice is made per
+# batch rather than once for the whole run.
+loess_correct_batch_hybrid <- function(se_b, qc_span, sample_span, sample_min_obs,
+                                        min_qc_per_batch = 4, min_ltqc_validate = 3) {
+  cd    <- colData(se_b)
+  n_qc  <- sum(cd$QC == "QC")
+  batch <- unique(cd$Batch)
+
+  if (n_qc >= min_qc_per_batch) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (>= ", min_qc_per_batch,
+            ") — using QC-based LOESS")
+    return(loess_correct_batch(se_b, span = qc_span))
+  }
+
+  n_ltqc <- sum(cd$QC == "ltQC")
+  if (n_ltqc < min_ltqc_validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") and only ", n_ltqc, " ltQC sample(s) (< ", min_ltqc_validate,
+            ") to validate a QC-free fit — leaving batch uncorrected")
+    return(se_b)
+  }
+
+  message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+          ") — trialing QC-free LOESS on samples, to be validated against ",
+          n_ltqc, " ltQC sample(s)")
+  se_trial <- loess_correct_batch_samples(se_b, span = sample_span, min_obs = sample_min_obs)
+
+  dratio_before <- eval_ltqc_dratio(se_b)
+  dratio_after  <- eval_ltqc_dratio(se_trial)
+
+  if (is.na(dratio_before) || is.na(dratio_after)) {
+    message("  Batch ", batch, ": could not compute ltQC/Sample D-ratio before/after (NA) — ",
+            "leaving batch uncorrected")
+    return(se_b)
+  }
+
+  if (dratio_after < dratio_before) {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio improved with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — keeping correction")
+    se_trial
+  } else {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio did not improve with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — reverting to uncorrected")
+    se_b
+  }
 }
 
 

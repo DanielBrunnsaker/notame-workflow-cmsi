@@ -166,6 +166,29 @@ if both are set for the same parameter.
                         batch.
                         Default: 10
 
+  LOESS_MIN_QC_PER_BATCH  Minimum QC samples a batch must have to use QC-based drift correction
+                        in loess_samples_combat / loess_samples_limma. These methods choose per
+                        batch: batches meeting this threshold are drift-corrected with QC-based
+                        LOESS (LOESS_SPAN). Batches below it try the QC-free fit on biological
+                        samples (LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS) as a trial, kept only if
+                        it improves the ltQC/Sample D-ratio — see LOESS_MIN_LTQC_VALIDATE. QC-based
+                        fitting is preferred whenever there's enough QC to support it, since it
+                        doesn't risk removing real biological signal along with drift.
+                        Default: 4
+
+  LOESS_MIN_LTQC_VALIDATE  Minimum ltQC samples a batch must have to validate the QC-free trial
+                        correction in loess_samples_combat / loess_samples_limma (used only for
+                        batches below LOESS_MIN_QC_PER_BATCH). The trial correction is compared
+                        against the batch's uncorrected values by ltQC/Sample D-ratio
+                        (MAD(ltQC)/MAD(Sample) — lower is better); it is kept if the D-ratio
+                        improves, discarded otherwise. D-ratio (not raw ltQC RSD) is used because
+                        any real drift correction shrinks measured sample variance somewhat, so a
+                        test that just required sample variance not to shrink would reject working
+                        corrections too — D-ratio instead only credits a disproportionate
+                        improvement in ltQC relative to Sample. Batches with fewer ltQC than this
+                        have no way to validate the trial and are left uncorrected.
+                        Default: 3
+
   CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
                         All other batches are corrected onto this batch.
                         Leave unset to auto-select the batch with the lowest median feature RSD.
@@ -252,9 +275,13 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "batchcorr"           — cluster-based spline drift + between-batch normalisation (Brunius et al.)
 #   "combat_only"         — ComBat batch correction only (no drift correction)
 #   "loess_combat"        — per-batch LOESS drift correction (QC-based) + ComBat batch correction
-#   "loess_samples_combat" — per-batch LOESS drift correction (QC-free, fit on samples) + ComBat
+#   "loess_samples_combat" — per-batch LOESS drift correction (QC-based if enough QC, else a
+#                            QC-free trial on samples kept only if it improves the ltQC/Sample
+#                            D-ratio, else uncorrected — see LOESS_MIN_QC_PER_BATCH,
+#                            LOESS_MIN_LTQC_VALIDATE) + ComBat
 #   "loess_limma"         — per-batch LOESS drift correction (QC-based) + limma removeBatchEffect
-#   "loess_samples_limma" — per-batch LOESS drift correction (QC-free, fit on samples) + limma removeBatchEffect
+#   "loess_samples_limma" — same per-batch QC-based/QC-free-trial/uncorrected choice as
+#                            loess_samples_combat + limma removeBatchEffect
 #   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
 #   "loess_cordbat"       — per-batch LOESS drift correction + CordBat batch correction
 #   "waveica"             — WaveICA 2.0 wavelet-based correction
@@ -265,6 +292,8 @@ SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
 LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
 LOESS_SAMPLE_SPAN         <- as.numeric(get_env("LOESS_SAMPLE_SPAN", "0.9"))
 LOESS_SAMPLE_MIN_OBS      <- as.integer(get_env("LOESS_SAMPLE_MIN_OBS", "10"))
+LOESS_MIN_QC_PER_BATCH    <- as.integer(get_env("LOESS_MIN_QC_PER_BATCH", "4"))
+LOESS_MIN_LTQC_VALIDATE   <- as.integer(get_env("LOESS_MIN_LTQC_VALIDATE", "3"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
@@ -285,6 +314,8 @@ run_preflight_checks(
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
+  loess_min_qc_per_batch = LOESS_MIN_QC_PER_BATCH,
+  loess_min_ltqc_validate = LOESS_MIN_LTQC_VALIDATE,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
   config_file = config_file, raw_sample_type_rules = config$sample_type_rules
@@ -615,9 +646,13 @@ for (method in CORRECTION_METHODS) {
       batchcorr    = correct_batchcorr(data),
       combat_only  = correct_combat_only(data),
       loess_combat        = correct_loess_combat(data, LOESS_SPAN),
-      loess_samples_combat = correct_loess_samples_combat(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS),
+      loess_samples_combat = correct_loess_samples_combat(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
+                                                           LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
+                                                           LOESS_MIN_LTQC_VALIDATE),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
-      loess_samples_limma = correct_loess_samples_limma(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS),
+      loess_samples_limma = correct_loess_samples_limma(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
+                                                          LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
+                                                          LOESS_MIN_LTQC_VALIDATE),
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),

@@ -436,19 +436,33 @@ eval_remaining_drift <- function(se) {
 }
 
 
-# Test whether pooled QC samples form a single homogeneous population after
-# correction, using PERMANOVA (centroid) and PERMDISP (dispersion) from vegan.
-# Requires vegan; returns NAs silently if not installed or fewer than 2 batches.
+# Test whether a pooled reference group (QC or ltQC) forms a single homogeneous
+# population after correction, using PERMANOVA (centroid) and PERMDISP
+# (dispersion) from vegan. Requires vegan; returns NAs silently if not
+# installed or fewer than 2 batches.
 #
-#   qc_permanova_r2  — R²(Batch) from PERMANOVA on QC samples; lower = better
-#   qc_permanova_p   — p-value; want > 0.05 (QC centroids don't differ by batch)
-#   qc_permdisp_p    — p-value from PERMDISP; want > 0.05 (homogeneous spread)
-eval_qc_homogeneity <- function(se) {
-  na_out <- list(qc_permanova_r2 = NA_real_,
-                 qc_permanova_p  = NA_real_,
-                 qc_permdisp_p   = NA_real_)
+# group = "QC" tests the same samples several methods (notame's RUV,
+# loess_combat, pmp_qcrsc, cordbat_only) use to *fit* their correction — a
+# pass there is partly circular, since the correction was built to make QC
+# match across batches. group = "ltQC" tests samples never used to fit any
+# correction, so a batch signature found there is unbiased evidence of a
+# real, unaddressed technical effect (assuming ltQC is genuinely the same
+# reference material injected throughout — no biological variation to
+# confound the result, unlike testing this on Sample). Prefer ltQC when
+# available; with as few as ~3 ltQC per batch the test is underpowered (weak
+# ability to detect a real but modest batch effect), so treat a non-significant
+# result as "no strong evidence found," not proof of no batch effect — a
+# significant result at that sample size is the more trustworthy direction.
+#
+#   {group}_permanova_r2  — R²(Batch) from PERMANOVA on the group; lower = better
+#   {group}_permanova_p   — p-value; want > 0.05 (centroids don't differ by batch)
+#   {group}_permdisp_p    — p-value from PERMDISP; want > 0.05 (homogeneous spread)
+eval_qc_homogeneity <- function(se, group = "QC") {
+  na_out <- list(permanova_r2 = NA_real_,
+                 permanova_p  = NA_real_,
+                 permdisp_p   = NA_real_)
 
-  qc_idx   <- which(colData(se)$QC == "QC")
+  qc_idx   <- which(colData(se)$QC == group)
   if (length(qc_idx) < 4) return(na_out)
   batch_qc <- as.character(colData(se)$Batch[qc_idx])
   if (length(unique(batch_qc)) < 2 || any(table(batch_qc) < 2)) return(na_out)
@@ -486,9 +500,9 @@ eval_qc_homogeneity <- function(se) {
     round(pt$tab[1, pc], 4)
   }, error = function(e) NA_real_) else NA_real_
 
-  list(qc_permanova_r2 = perm_r2,
-       qc_permanova_p  = perm_p,
-       qc_permdisp_p   = disp_p)
+  list(permanova_r2 = perm_r2,
+       permanova_p  = perm_p,
+       permdisp_p   = disp_p)
 }
 
 
@@ -508,9 +522,17 @@ eval_qc_homogeneity <- function(se) {
 #                            lower = less remaining batch effect
 #   remaining_drift_r      — median absolute Spearman cor of QC abundance with
 #                            injection order within batches; lower = less drift remaining
-#   qc_permanova_r2        — R²(Batch) from PERMANOVA on QC samples (lower = better)
+#   qc_permanova_r2        — R²(Batch) from PERMANOVA on QC samples (lower = better).
+#                            QC is used to *fit* several correction methods, so this
+#                            is a partly circular check for those methods — see
+#                            ltqc_permanova_r2 for the unbiased version.
 #   qc_permanova_p         — p-value; want > 0.05 (QC don't cluster by batch)
 #   qc_permdisp_p          — PERMDISP p-value; want > 0.05 (homogeneous QC spread)
+#   ltqc_permanova_r2      — as qc_permanova_r2 but on ltQC, which is never used to fit
+#                            any correction — an unbiased (if underpowered at typical
+#                            ltQC counts) check for a remaining batch signature
+#   ltqc_permanova_p       — p-value; want > 0.05 (ltQC don't cluster by batch)
+#   ltqc_permdisp_p        — PERMDISP p-value; want > 0.05 (homogeneous ltQC spread)
 #
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
@@ -548,10 +570,18 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
     stringsAsFactors      = FALSE
   )
 
-  qc_homo <- eval_qc_homogeneity(se)
-  summary_row$qc_permanova_r2 <- qc_homo$qc_permanova_r2
-  summary_row$qc_permanova_p  <- qc_homo$qc_permanova_p
-  summary_row$qc_permdisp_p   <- qc_homo$qc_permdisp_p
+  qc_homo <- eval_qc_homogeneity(se, group = "QC")
+  summary_row$qc_permanova_r2 <- qc_homo$permanova_r2
+  summary_row$qc_permanova_p  <- qc_homo$permanova_p
+  summary_row$qc_permdisp_p   <- qc_homo$permdisp_p
+
+  # ltQC is never used to fit any correction method, so this is an unbiased
+  # (if underpowered, at typical ltQC counts) check — see eval_qc_homogeneity's
+  # documentation for why this differs from the qc_permanova_* check above.
+  ltqc_homo <- eval_qc_homogeneity(se, group = "ltQC")
+  summary_row$ltqc_permanova_r2 <- ltqc_homo$permanova_r2
+  summary_row$ltqc_permanova_p  <- ltqc_homo$permanova_p
+  summary_row$ltqc_permdisp_p   <- ltqc_homo$permdisp_p
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method, ".csv")), row.names = FALSE)
 

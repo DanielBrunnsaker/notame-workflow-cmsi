@@ -143,14 +143,19 @@ correct_loess_combat <- function(data, loess_span) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_samples_combat <- function(data, loess_span, loess_min_obs) {
+correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_obs,
+                                          min_qc_per_batch = 4, min_ltqc_validate = 3) {
   suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (QC-free LOESS on biological samples)")
+  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples ",
+          "validated against ltQC, else uncorrected)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_samples(se_b, span = loess_span, min_obs = loess_min_obs)
+      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
+                                  sample_min_obs = sample_min_obs,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate)
     }),
     merge = "samples"
   )
@@ -367,14 +372,19 @@ correct_loess_limma <- function(data, loess_span) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_samples_limma <- function(data, loess_span, loess_min_obs) {
+correct_loess_samples_limma <- function(data, qc_span, sample_span, sample_min_obs,
+                                         min_qc_per_batch = 4, min_ltqc_validate = 3) {
   suppressPackageStartupMessages(library(limma))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (QC-free LOESS on biological samples)")
+  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples ",
+          "validated against ltQC, else uncorrected)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_samples(se_b, span = loess_span, min_obs = loess_min_obs)
+      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
+                                  sample_min_obs = sample_min_obs,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate)
     }),
     merge = "samples"
   )
@@ -723,9 +733,35 @@ correct_batchcorr <- function(data,
     message("==> Single batch detected — skipping mergeBatches, using corrected batch directly")
     b      <- names(batch_corrObjs)[1]
     bc     <- batch_corrObjs[[b]]
+
+    # correctDrift() has no $peakTable field — its actual outputs (per its own
+    # console messages) are $TestFeatsCorr (all corrected features) and
+    # $TestFeatsFinal (after its internal QC-CV filter; identical to
+    # TestFeatsCorr here since CVlimit = Inf disables that filter). Using the
+    # nonexistent $peakTable silently gave NULL -> 0 kept features -> a
+    # downstream SummarizedExperiment row-count mismatch crash.
+    peak_corr <- bc$TestFeatsFinal
+    if (is.null(peak_corr)) peak_corr <- bc$TestFeatsCorr
+    if (is.null(peak_corr))
+      stop("correctDrift() result for batch ", b, " has neither TestFeatsFinal nor ",
+           "TestFeatsCorr. Available fields: ", paste(names(bc), collapse = ", "))
+
+    b_idx        <- which(as.character(meta$Batch) == b)
+    b_idx        <- b_idx[order(meta[b_idx, "Injection_order"])]
+    peakTableOrg <- mat[b_idx, , drop = FALSE]
+
+    # TestFeatsCorr/TestFeatsFinal's row coverage isn't confirmed against
+    # package docs offline — flag loudly rather than silently dropping
+    # samples (e.g. if it only covers "Test"/non-QC rows, not QC).
+    missing_samples <- setdiff(rownames(peakTableOrg), rownames(peak_corr))
+    if (length(missing_samples) > 0)
+      message("  WARNING: ", length(missing_samples), " sample(s) from batch ", b,
+              " missing from correctDrift()'s corrected table and will be dropped: ",
+              paste(missing_samples, collapse = ", "))
+
     merged <- list(
-      peakTableCorr = bc$peakTable,
-      peakTableOrg  = mat[which(as.character(meta$Batch) == b)[order(meta[which(as.character(meta$Batch) == b), "Injection_order"])], , drop = FALSE]
+      peakTableCorr = peak_corr,
+      peakTableOrg  = peakTableOrg
     )
   } else {
     message("==> Merging batches")
