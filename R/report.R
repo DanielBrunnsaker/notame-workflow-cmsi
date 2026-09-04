@@ -44,19 +44,46 @@ png_to_data_uri <- function(path) {
   paste0("data:image/png;base64,", jsonlite::base64_enc(raw))
 }
 
-# One <figure> per PNG found directly inside `dir` (non-recursive).
+# Rasterizes a single-page PDF to PNG via poppler-utils' pdftoppm (installed in
+# the Docker image) and returns a data URI. notameViz::save_QC_plots() writes
+# PDF by default — its png format writes width/height as literal pixels
+# (a handful of px), not inches, so plots are generated as PDF and rasterized
+# here instead of relying on its png output.
+pdf_to_png_data_uri <- function(pdf_path) {
+  tmp <- tempfile()
+  on.exit(unlink(paste0(tmp, ".png")), add = TRUE)
+  ok <- tryCatch(
+    system2("pdftoppm", c("-png", "-r", "150", "-singlefile", pdf_path, tmp),
+            stdout = FALSE, stderr = FALSE) == 0,
+    error = function(e) FALSE
+  )
+  png_path <- paste0(tmp, ".png")
+  if (!ok || !file.exists(png_path)) return(NA_character_)
+  tryCatch(png_to_data_uri(png_path), error = function(e) NA_character_)
+}
+
+# One <figure> per PNG/PDF found directly inside `dir` (non-recursive).
 plots_html <- function(dir) {
   if (!dir.exists(dir)) return("<p class=\"muted\">(no plots)</p>")
-  files <- list.files(dir, pattern = "\\.png$", full.names = TRUE)
-  if (length(files) == 0) return("<p class=\"muted\">(no plots)</p>")
+  png_files <- list.files(dir, pattern = "\\.png$", full.names = TRUE)
+  pdf_files <- list.files(dir, pattern = "\\.pdf$", full.names = TRUE)
+  if (length(png_files) == 0 && length(pdf_files) == 0) return("<p class=\"muted\">(no plots)</p>")
 
-  figs <- vapply(files, function(f) {
-    label <- html_escape(tools::file_path_sans_ext(basename(f)))
-    uri   <- tryCatch(png_to_data_uri(f), error = function(e) NA_character_)
+  make_fig <- function(f, uri) {
     if (is.na(uri)) return("")
+    label <- html_escape(tools::file_path_sans_ext(basename(f)))
     sprintf("<figure><img src=\"%s\" alt=\"%s\"><figcaption>%s</figcaption></figure>",
             uri, label, label)
-  }, character(1))
+  }
+
+  png_figs <- vapply(png_files, function(f)
+    make_fig(f, tryCatch(png_to_data_uri(f), error = function(e) NA_character_)), character(1))
+  pdf_figs <- vapply(pdf_files, function(f)
+    make_fig(f, pdf_to_png_data_uri(f)), character(1))
+
+  figs <- c(png_figs, pdf_figs)
+  figs <- figs[nzchar(figs)]
+  if (length(figs) == 0) return("<p class=\"muted\">(no plots)</p>")
 
   paste0("<div class=\"plot-grid\">", paste(figs, collapse = ""), "</div>")
 }

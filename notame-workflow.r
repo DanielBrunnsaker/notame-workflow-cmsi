@@ -551,7 +551,7 @@ if (SAVE_PRE_CORRECTION_PLOTS) {
   dir.create(file.path(output_dir, "pre_correction"), showWarnings = FALSE, recursive = TRUE)
   tryCatch(
     save_QC_plots(data, prefix = file.path(output_dir, "pre_correction/"), id = "Sample_ID",
-                  perplexity = safe_perplexity(ncol(data)), format = "png"),
+                  perplexity = safe_perplexity(ncol(data))),
     error = function(e) message("WARNING: save_QC_plots failed (pre-correction): ", conditionMessage(e))
   )
 }
@@ -651,7 +651,7 @@ for (method in CORRECTION_METHODS) {
 
   tryCatch(
     save_QC_plots(combined, prefix = file.path(method_out, "QC_plots/post_correction_"), id = "Sample_ID",
-                  perplexity = safe_perplexity(ncol(combined)), format = "png"),
+                  perplexity = safe_perplexity(ncol(combined))),
     error = function(e) message("WARNING: save_QC_plots failed (", method, "): ", conditionMessage(e))
   )
 

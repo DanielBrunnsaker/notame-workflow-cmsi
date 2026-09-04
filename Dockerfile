@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     libtiff5-dev \
     libjpeg-dev \
     libglpk-dev \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RENV_PATHS_LIBRARY=/renv/library
