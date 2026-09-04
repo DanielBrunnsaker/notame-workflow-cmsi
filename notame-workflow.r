@@ -119,8 +119,8 @@ if both are set for the same parameter.
   LOW_INT_PERCENTILE    Percentile used for the low-intensity filter (0-1).
                         Default: 0.8
 
-  MIN_QC_SAMPLE_DETECTION  Minimum fraction of features that must be detected in a QC sample
-                        for it to be used as a QC reference. QC samples below this threshold
+  MIN_QC_SAMPLE_DETECTION  Minimum fraction of features that must be detected in a QC or ltQC
+                        sample for it to be used as a reference. Samples below this threshold
                         are removed before processing (empty injections, failed runs).
                         Default: 0.50
 
@@ -419,17 +419,22 @@ data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "
 }
 n_after_lowint <- nrow(data)
 
-# Remove QC samples with insufficient feature detection (empty injections, failed runs)
-# Runs after feature filters so detection rate is assessed on meaningful features only
-{
-  qc_cols   <- which(colData(data)$QC == "QC")
+# Remove QC/ltQC samples with insufficient feature detection (empty injections,
+# failed runs). Runs after feature filters so detection rate is assessed on
+# meaningful features only. ltQC is checked here too, using the same threshold
+# as QC — it's the held-out group the loess_samples_combat/limma validation
+# trial and the ltqc_permanova_* metrics rely on, and with typically only a
+# few ltQC per batch, one bad injection would badly distort both.
+for (qc_group in c("QC", "ltQC")) {
+  qc_cols <- which(colData(data)$QC == qc_group)
+  if (length(qc_cols) == 0) next
   mat_qc    <- assay(data)[, qc_cols, drop = FALSE]
   detect_qc <- colMeans(mat_qc > 0 & !is.na(mat_qc))
   bad_qc    <- qc_cols[detect_qc < MIN_QC_SAMPLE_DETECTION]
   if (length(bad_qc) > 0) {
     bad_names <- colData(data)$Sample_ID[bad_qc]
     bad_batch <- colData(data)$Batch[bad_qc]
-    message("==> Removing ", length(bad_qc), " QC sample(s) with detection rate < ",
+    message("==> Removing ", length(bad_qc), " ", qc_group, " sample(s) with detection rate < ",
             round(MIN_QC_SAMPLE_DETECTION * 100), "%:")
     for (k in seq_along(bad_names))
       message("    ", bad_names[k], " (batch: ", bad_batch[k], ", detection: ",
