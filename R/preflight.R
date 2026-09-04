@@ -10,7 +10,7 @@
 VALID_CORRECTION_METHODS <- c(
   "none", "notame", "pmp_qcrsc", "pmp_qcrsc_scale", "pmp_qcrsc_feature_scale",
   "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat",
-  "loess_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
+  "loess_limma", "loess_samples_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
   "loess_cordbat", "waveica"
 )
 
