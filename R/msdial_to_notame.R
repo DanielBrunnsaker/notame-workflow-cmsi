@@ -43,9 +43,9 @@ msdial_to_notame <- function(in_xlsx, out_xlsx, sample_type_rules = NULL) {
     prefix_pat <- "^(\\d{4}-\\d{2}-\\d{2})_([^_]+)_(.+?)_(POS|NEG)_"
     m_pre <- regmatches(fn, regexec(prefix_pat, fn, perl = TRUE))[[1]]
     if (length(m_pre) < 5) {
-      warning("Could not parse filename: ", fn)
+      message("WARNING: Could not parse filename: ", fn)
       return(list(batch = NA, column = NA, polarity = NA,
-                  is_mse = FALSE, name = fn, injection_order = NA_integer_))
+                  is_mse = FALSE, is_ms2 = FALSE, name = fn, injection_order = NA_integer_))
     }
 
     middle   <- m_pre[4]  # e.g. "RP", "RP_MSe", "RP_MSe_MSe"
