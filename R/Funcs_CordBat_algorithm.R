@@ -62,6 +62,12 @@ getAllCom <- function(X){
   
   # get pearson correlation coefficient matrix
   G <- cor(X)
+  # A zero-variance feature (possible even with no missing values -- e.g. one
+  # that had some spread before DelOutlier() removed the one or two samples
+  # responsible for it) gives cor() an undefined (NA) correlation with every
+  # other feature, which later crashes graph_from_adjacency_matrix(). Treat an
+  # undefined correlation as "uncorrelated" rather than propagate the NA.
+  G[is.na(G)] <- 0
   G <- 1 / 2 * (G + t(G))
   
   initCOM <- list(c(1:p))
@@ -108,7 +114,13 @@ getAllCom <- function(X){
         S1.metID <- lastCOM[[cmty.sizeis1[i]]]
         allCorwithS1 <- G[, S1.metID]
         allCorwithS1[S1.metID] <- 0 # ignore correlation with itself
-        Maxcor.metID <- which(allCorwithS1 == max(allCorwithS1))
+        # [1]: break ties deterministically (e.g. a zero-variance feature has
+        # 0 correlation with everything, tying every other feature for "max")
+        # -- without it, which() can return multiple indices and the
+        # lastCOM[[mergeCmty]] lookup below fails with "recursive indexing
+        # failed" on a multi-element index. Matches the size-2 case below,
+        # which already guards the same way.
+        Maxcor.metID <- which(allCorwithS1 == max(allCorwithS1))[1]
         mergeCmty <- ComtyID[Maxcor.metID]
         mC.metIDs <- lastCOM[[mergeCmty]]
         mC.metIDs <- c(mC.metIDs, S1.metID)
@@ -195,15 +207,23 @@ soft <- function(x, lambda){
 # -------------------
 CDfgL <- function(V, beta_i, u, rho){
   p_1 <- ncol(V)
-  
+
   # initialize
   beta.new <- rep(0, p_1)
   finished <- rep(FALSE, p_1)
   eps <- 1e-4
   times0 <- 0
   times1 <- 0
-  
+  max_iter <- 1000  # safety cap: on ill-conditioned input (e.g. a near-
+                     # degenerate feature) the coefficients can oscillate and
+                     # never satisfy the convergence heuristic below, which
+                     # otherwise loops forever with no error -- unlike a
+                     # crash, tryCatch() around the calling method can't
+                     # catch a hang, so this must terminate on its own.
+  iter <- 0
+
   while(TRUE){
+    iter <- iter + 1
     beta.old <- beta_i
     for (j in c(1: p_1)) {
       df <- V %*% beta_i - u
@@ -239,8 +259,11 @@ CDfgL <- function(V, beta_i, u, rho){
     }
     
     
-    if (all(finished)) {
-      
+    if (all(finished) || iter >= max_iter) {
+      if (iter >= max_iter && !all(finished))
+        warning("CDfgL: reached max_iter (", max_iter, ") without full ",
+                "convergence; using current (partially converged) coefficients.",
+                call. = FALSE)
       break
     }
   }
@@ -644,8 +667,14 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
   times0.gvec <- rep(0, G)
   times1.gvec <- rep(0, G)
   finished.gmat <- matrix(F, (p - 1) * p / 2, G)
-  
+  max_iter <- 1000  # safety cap -- see CDfgL()'s comment; same non-termination
+                     # risk on ill-conditioned (e.g. near-degenerate feature)
+                     # community data, and a hang here can't be caught by
+                     # tryCatch() around the calling correction method either.
+  iter <- 0
+
   while(TRUE) {
+    iter <- iter + 1
     W_old.list <- W.list
     coef.A <- diag(coef.a)
     S.list <- list()
@@ -730,17 +759,21 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
       }
     }
     
-    if (all(as.vector(finished.gmat))) {
+    if (all(as.vector(finished.gmat)) || iter >= max_iter) {
+      if (iter >= max_iter && !all(as.vector(finished.gmat)))
+        warning("BEgLasso: reached max_iter (", max_iter, ") without full ",
+                "convergence; using current (partially converged) parameters.",
+                call. = FALSE)
       break
     }
     else {
-      coef.update <- update.CorrectCoef(X0.glist, X1.glist, Theta.list, 
+      coef.update <- update.CorrectCoef(X0.glist, X1.glist, Theta.list,
                                         coef.a, coef.b, penal.ksi, penal.gamma)
       coef.a <- coef.update$coef.a
       coef.b <- coef.update$coef.b
     }
   }
-  
+
   # replace a negative coefficient a with a small positive value
   neg.Idx <- (coef.a < 0)
   coef.a[neg.Idx] <- 0.05
@@ -877,18 +910,23 @@ ImputeOutlier <- function(X) {
     dat.i.sd <- sd(dat.i)
     dat.i.max <- dat.i.m + 3 * dat.i.sd
     dat.i.min <- dat.i.m - 3 * dat.i.sd
-    dat.i[dat.i < dat.i.min | dat.i > dat.i.max] <- NA
+    flagged <- dat.i < dat.i.min | dat.i > dat.i.max
+    dat.i[flagged] <- NA
+
+    # Impute flagged values from this column's own pre-flagging median (X[, i]
+    # is complete on entry — lod2_impute() already ran upstream — so this is
+    # never NA). A *post*-flagging median can itself be NA: if a feature's
+    # values are tightly clustered except for one or two extreme points, the
+    # inflated SD can make the +-3SD window so narrow that every value in the
+    # column gets flagged, leaving nothing for median(..., na.rm = TRUE) to
+    # compute from. That NA then propagates into cor() and crashes
+    # graph_from_adjacency_matrix() with "adjacency matrix contains NAs".
+    if (any(flagged))
+      dat.i[flagged] <- median(X[, i], na.rm = TRUE)
 
     X.out[, i] <- dat.i
   }
-  
-  # Impute any remaining NAs with column median
-  for (j in seq_len(ncol(X.out))) {
-    na_idx <- which(is.na(X.out[, j]))
-    if (length(na_idx) > 0)
-      X.out[na_idx, j] <- median(X.out[, j], na.rm = TRUE)
-  }
-  
+
   return(X.out)
 }
 
