@@ -153,17 +153,17 @@ if both are set for the same parameter.
                         Default: 0.75
 
   LOESS_SAMPLE_SPAN     LOESS smoothing span for QC-free drift correction (loess_samples_combat,
-                        loess_samples_limma), fit on biological samples instead of QC. Wider than
-                        LOESS_SPAN by default since each point is a unique biological measurement,
-                        not a technical replicate — a tighter span risks fitting individual-sample
-                        noise as drift.
+                        loess_samples_limma, loess_cordbat), fit on biological samples instead of
+                        QC. Wider than LOESS_SPAN by default since each point is a unique
+                        biological measurement, not a technical replicate — a tighter span risks
+                        fitting individual-sample noise as drift.
                         Default: 0.9
 
   LOESS_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt
-                        QC-free drift correction (loess_samples_combat, loess_samples_limma).
-                        Deliberately higher than the QC-based fit's threshold of 4, since sample
-                        points are far noisier. Features below this are left uncorrected for that
-                        batch.
+                        QC-free drift correction (loess_samples_combat, loess_samples_limma,
+                        loess_cordbat). Deliberately higher than the QC-based fit's threshold of
+                        4, since sample points are far noisier. Features below this are left
+                        uncorrected for that batch.
                         Default: 10
 
   LOESS_MIN_QC_PER_BATCH  Minimum QC samples a batch must have to use QC-based drift correction
@@ -193,6 +193,37 @@ if both are set for the same parameter.
                         All other batches are corrected onto this batch.
                         Leave unset to auto-select the batch with the lowest median feature RSD.
                         Default: (auto)
+
+  WAVEICA_ALPHA         Significance threshold WaveICA2.0 (waveica) uses to decide whether an
+                        independent component is injection-order-related and should be removed.
+                        Lower = stricter (fewer components flagged, less aggressive correction);
+                        higher = more components flagged and removed. Try lowering this first if
+                        correction looks too aggressive (flattens real sample-to-sample variation).
+                        Default: 0.05
+
+  WAVEICA_CUTOFF        Threshold (0-1) for how much of a wavelet-decomposed level's variance must
+                        be associated with injection order before that level is considered
+                        technical and passed to ICA for cleanup. Lower = more levels get corrected
+                        (more aggressive); higher = fewer, more conservative.
+                        Default: 0.10
+
+  WAVEICA_K             Number of independent components WaveICA2.0 decomposes the data into.
+                        Default here is 2 x (number of batches), which is quite small for typical
+                        feature counts — a coarse decomposition gives ICA less room to isolate
+                        narrow technical components from broad biological ones, which may be why
+                        correction looks like it removes more than just drift/batch noise. Try
+                        raising this (e.g. 10-20) if correction looks too aggressive.
+                        Default: (auto = 2 x n_batches)
+
+  WAVEICA_WF            Wavelet family used for the decomposition step (passed to WaveICA2.0's
+                        wf argument, e.g. haar or a Daubechies family recognised by the
+                        underlying wavelet package).
+                        Default: haar
+
+                        Note: these four are exposed as-is from the WaveICA2.0 package
+                        (github.com/dengkuistat/WaveICA_2.0); the direction-of-effect guidance
+                        above is based on the published method rather than inspection of this
+                        specific package version's source, so confirm empirically on your data.
 
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
@@ -283,7 +314,9 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "loess_samples_limma" — same per-batch QC-based/QC-free-trial/uncorrected choice as
 #                            loess_samples_combat + limma removeBatchEffect
 #   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
-#   "loess_cordbat"       — per-batch LOESS drift correction + CordBat batch correction
+#   "loess_cordbat"       — per-batch QC-free LOESS drift correction (fit on samples, always —
+#                            CordBat's own between-batch step is also QC-free, fit on samples)
+#                            + CordBat batch correction
 #   "waveica"             — WaveICA 2.0 wavelet-based correction
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
@@ -296,6 +329,11 @@ LOESS_MIN_QC_PER_BATCH    <- as.integer(get_env("LOESS_MIN_QC_PER_BATCH", "4"))
 LOESS_MIN_LTQC_VALIDATE   <- as.integer(get_env("LOESS_MIN_LTQC_VALIDATE", "3"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
+WAVEICA_ALPHA   <- as.numeric(get_env("WAVEICA_ALPHA",  "0.05"))
+WAVEICA_CUTOFF  <- as.numeric(get_env("WAVEICA_CUTOFF", "0.10"))
+waveica_k_env   <- get_env("WAVEICA_K", "")
+WAVEICA_K       <- if (waveica_k_env == "") NULL else as.integer(waveica_k_env)
+WAVEICA_WF      <- get_env("WAVEICA_WF", "haar")
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
@@ -316,6 +354,8 @@ run_preflight_checks(
   loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
   loess_min_qc_per_batch = LOESS_MIN_QC_PER_BATCH,
   loess_min_ltqc_validate = LOESS_MIN_LTQC_VALIDATE,
+  waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF,
+  waveica_k = if (is.null(WAVEICA_K)) NA_integer_ else WAVEICA_K,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
   config_file = config_file, raw_sample_type_rules = config$sample_type_rules
@@ -661,8 +701,10 @@ for (method in CORRECTION_METHODS) {
       loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
       loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
       cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
-      loess_cordbat = correct_loess_cordbat(data, LOESS_SPAN, CORDBAT_REF_BATCH),
-      waveica      = correct_waveica(data),
+      loess_cordbat = correct_loess_cordbat(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS,
+                                             CORDBAT_REF_BATCH),
+      waveica      = correct_waveica(data, alpha = WAVEICA_ALPHA, cutoff = WAVEICA_CUTOFF,
+                                      K = WAVEICA_K, wf = WAVEICA_WF),
       stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
     )
   }, error = function(e) {

@@ -921,12 +921,22 @@ correct_cordbat_only <- function(data, ref_batch = NULL) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_cordbat <- function(data, loess_span, ref_batch = NULL) {
+correct_loess_cordbat <- function(data, sample_span, sample_min_obs, ref_batch = NULL) {
+  # Always the QC-free samples-based fit, deliberately — CordBat's own
+  # between-batch correction (run_cordbat -> CordBat()) is already fit on
+  # biological samples, not QC (see Funcs_CordBat_algorithm.R: QC rows are
+  # stripped out before the GGM fit and only corrected afterward using
+  # coefficients learned from Samples). Using a QC-anchored drift step ahead
+  # of it would make this combined method depend on QC for drift but not for
+  # batch correction — an inconsistent mix. This keeps loess_cordbat QC-free
+  # end to end, so it corrects every batch the same way regardless of QC
+  # coverage (unlike loess_combat/loess_samples_combat's QC-preferring hybrid).
+  #
   # LOESS handles NAs natively — no LoD/2 before this step
-  message("==> Drift correction (LOESS)")
+  message("==> Drift correction (QC-free LOESS on biological samples)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
+      loess_correct_batch_samples(se_b, span = sample_span, min_obs = sample_min_obs)
     }),
     merge = "samples"
   )
@@ -947,20 +957,27 @@ correct_loess_cordbat <- function(data, loess_span, ref_batch = NULL) {
 
 
 
-correct_waveica <- function(data) {
+# K = NULL auto-derives the component count as before (2 per batch); pass an
+# explicit value to override. alpha/Cutoff/wf are forwarded to WaveICA_2.0()
+# as-is — see notame-workflow.r's WAVEICA_* help text for what each does and
+# which direction to try if correction looks too aggressive ("flattens" real
+# sample variation) vs. too weak (batch effect still visible after correction).
+correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NULL, wf = "haar") {
   suppressPackageStartupMessages(library(WaveICA2.0))
 
   obs_mask <- !is.na(assay(data, 1))
   data     <- lod2_impute(data)
 
-  message("==> WaveICA2.0 correction")
+  k_eff <- if (is.null(K)) length(unique(colData(data)$Batch)) * 2 else K
+  message("==> WaveICA2.0 correction (alpha=", alpha, ", Cutoff=", cutoff,
+          ", K=", k_eff, ", wf=", wf, ")")
   corrected_mat <- WaveICA_2.0(
     data            = t(assay(data, 1)),
-    wf              = "haar",
+    wf              = wf,
     Injection_Order = as.numeric(colData(data)$Injection_order),
-    alpha           = 0.05,
-    Cutoff          = 0.10,
-    K               = length(unique(colData(data)$Batch)) * 2
+    alpha           = alpha,
+    Cutoff          = cutoff,
+    K               = k_eff
   )
   assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
 
