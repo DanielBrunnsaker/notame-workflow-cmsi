@@ -1,6 +1,58 @@
 # Title: The CordBat algorithm
 # Author: Fanjing Guo
 # Date: 2022.12.28
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE MODIFICATIONS (search this file for "[PIPELINE FIX]")
+#
+# The algorithm above is otherwise unmodified from the original -- every
+# change below is a bug fix for a crash/hang on real data, not a change to
+# the method's mathematical behavior on well-conditioned input. Each is
+# additive/guarding: on input that would already have worked, output is
+# unchanged (verified for each fix below); the changes only alter behavior
+# on inputs that previously crashed or hung. None of them touch the
+# statistical model, the correction math, or the community-detection logic.
+#
+#   1. getAllCom(): cor() returns NA for a zero-variance feature even with
+#      no missing data (undefined correlation) -- crashed
+#      graph_from_adjacency_matrix() downstream. NAs zeroed (treated as
+#      "uncorrelated") before building the graph.
+#   2. getAllCom(): the singleton-community merge step picked the
+#      max-correlated feature via which(x == max(x)) with no tie-break;
+#      a feature with 0 correlation to everything (from fix 1) ties with
+#      every other feature, returning multiple indices and crashing the
+#      lastCOM[[mergeCmty]] lookup ("recursive indexing failed"). Added
+#      [1] to break ties deterministically -- matching the adjacent
+#      size-2 case, which already did this.
+#   3. CDfgL(), BEgLasso(): both are `while(TRUE)` coordinate-descent loops
+#      with no iteration cap, relying entirely on a convergence heuristic
+#      to exit. Near-collinear input (e.g. a near-degenerate feature)
+#      converges at a rate that can take thousands of iterations to
+#      satisfy the strict threshold -- observed directly as a 15+ minute
+#      stall on real data. Added a 1000-iteration safety cap to each,
+#      with a warning if hit; normal convergence is unaffected since the
+#      cap only matters when the existing exit condition would not
+#      otherwise fire in reasonable time.
+#   4. safe_scale() (new helper) + DelOutlier(): scale(X, scale = TRUE)
+#      divides by 0 for any zero-variance column, silently producing an
+#      all-NaN column rather than erroring -- which then propagates NaN
+#      into cov()/graphicalLasso()/CDfgL() and crashes CDfgL() with
+#      "missing value where TRUE/FALSE needed" once a NaN coefficient
+#      makes an == comparison undefined. A zero-variance feature is
+#      possible even when the original data had real variance: DelOutlier's
+#      per-batch/per-group outlier-row removal can remove exactly the
+#      samples responsible for a feature's spread. safe_scale() wraps
+#      scale() and replaces a zero-variance column's resulting NaNs with
+#      0 (a constant feature carries no informative variation) instead of
+#      propagating NaN; used in place of scale(X, center = TRUE,
+#      scale = TRUE) at all 8 sites in this file where the result feeds
+#      into cov()/graphicalLasso(). Separately, prcomp(X, scale. = TRUE)
+#      (in DelOutlier()) does its own internal zero-variance check and
+#      hard-errors rather than producing NaN -- fixed by pre-scaling with
+#      safe_scale() and calling prcomp(..., center = FALSE, scale. = FALSE),
+#      which gives identical results to prcomp(X, center = TRUE,
+#      scale. = TRUE) whenever no column is degenerate (verified directly).
+# ─────────────────────────────────────────────────────────────────────────────
 
 suppressPackageStartupMessages(library(igraph))
 
@@ -62,7 +114,7 @@ getAllCom <- function(X){
   
   # get pearson correlation coefficient matrix
   G <- cor(X)
-  # A zero-variance feature (possible even with no missing values -- e.g. one
+  # [PIPELINE FIX 1] A zero-variance feature (possible even with no missing values -- e.g. one
   # that had some spread before DelOutlier() removed the one or two samples
   # responsible for it) gives cor() an undefined (NA) correlation with every
   # other feature, which later crashes graph_from_adjacency_matrix(). Treat an
@@ -114,7 +166,7 @@ getAllCom <- function(X){
         S1.metID <- lastCOM[[cmty.sizeis1[i]]]
         allCorwithS1 <- G[, S1.metID]
         allCorwithS1[S1.metID] <- 0 # ignore correlation with itself
-        # [1]: break ties deterministically (e.g. a zero-variance feature has
+        # [PIPELINE FIX 2] [1]: break ties deterministically (e.g. a zero-variance feature has
         # 0 correlation with everything, tying every other feature for "max")
         # -- without it, which() can return multiple indices and the
         # lastCOM[[mergeCmty]] lookup below fails with "recursive indexing
@@ -205,7 +257,9 @@ soft <- function(x, lambda){
 # -------------------
 # safe column scaling
 # -------------------
-# Drop-in replacement for scale(X, center = TRUE, scale = TRUE). A
+# [PIPELINE FIX 4] New helper, not in the original algorithm -- see the
+# summary at the top of this file. Drop-in replacement for
+# scale(X, center = TRUE, scale = TRUE). A
 # zero-variance column divides by an SD of 0 under plain scale(), becoming
 # entirely NaN; that NaN then flows into cov()/graphicalLasso()/CDfgL() and
 # eventually crashes with "missing value where TRUE/FALSE needed" once a NaN
@@ -214,11 +268,24 @@ soft <- function(x, lambda){
 # a feature with real variance in the original data) carries no informative
 # variation to begin with, so its scaled values are set to 0 here instead of
 # NaN -- a standard convention, and the only change from plain scale().
+#
+# A constant column's *centered* value is already exactly 0 (x - mean == 0
+# for every entry) before any division happens, so this matches what
+# scale(center = TRUE) alone would give -- only "scaled:scale" needs
+# correcting, from the stale 0 (never actually divided by) to 1 (no rescaling
+# applied). This matters beyond cosmetics: prcomp(scale. = TRUE) internally
+# calls scale(x, ...) again on its input and checks that same attribute
+# (any(attr(x, "scaled:scale") == 0)) before erroring -- an uncorrected 0
+# left over from this function survives a later no-op scale() call and trips
+# that check even when center = FALSE, scale. = FALSE is requested.
 safe_scale <- function(X) {
   Xs <- scale(X, center = TRUE, scale = TRUE)
   zero_var <- attr(Xs, "scaled:scale") == 0
   zero_var[is.na(zero_var)] <- FALSE
-  if (any(zero_var)) Xs[, zero_var] <- 0
+  if (any(zero_var)) {
+    Xs[, zero_var] <- 0
+    attr(Xs, "scaled:scale")[zero_var] <- 1
+  }
   Xs
 }
 
@@ -234,7 +301,7 @@ CDfgL <- function(V, beta_i, u, rho){
   eps <- 1e-4
   times0 <- 0
   times1 <- 0
-  max_iter <- 1000  # safety cap: on ill-conditioned input (e.g. a near-
+  max_iter <- 1000  # [PIPELINE FIX 3] safety cap: on ill-conditioned input (e.g. a near-
                      # degenerate feature) the coefficients can oscillate and
                      # never satisfy the convergence heuristic below, which
                      # otherwise loops forever with no error -- unlike a
@@ -297,7 +364,7 @@ graphicalLasso <- function(X, rho){
   N <- nrow(X)
   p <- ncol(X)
   # centered and scaling
-  X <- safe_scale(X)
+  X <- safe_scale(X)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
   # get covariance matrix
   S <- cov(X)
   
@@ -496,7 +563,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
         Theta <- c.mat$Theta
         
         # compute error for CV set
-        X.cv.sca <- safe_scale(X.cv)
+        X.cv.sca <- safe_scale(X.cv)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
         S.cv <- cov(X.cv.sca)
         
         k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -508,7 +575,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
       Theta <- c.mat$Theta
       
       # compute error for CV set
-      X.sca <- safe_scale(X)
+      X.sca <- safe_scale(X)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
       S <- cov(X.sca)
       
       k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -569,7 +636,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- safe_scale(X.gi)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -598,7 +665,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- safe_scale(X.gi)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -675,7 +742,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
   W.list <- list()
   for (g in c(1: G)) {
     X.gi <- rbind(X0.glist[[g]], X1.cor.glist[[g]])
-    X.gi.sca <- safe_scale(X.gi)
+    X.gi.sca <- safe_scale(X.gi)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
     S0_gi <- cov(X.gi.sca)
     W_i <- S0_gi + penal.rho * diag(1, p)
     W.list[[g]] <- W_i
@@ -687,7 +754,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
   times0.gvec <- rep(0, G)
   times1.gvec <- rep(0, G)
   finished.gmat <- matrix(F, (p - 1) * p / 2, G)
-  max_iter <- 1000  # safety cap -- see CDfgL()'s comment; same non-termination
+  max_iter <- 1000  # [PIPELINE FIX 3] safety cap -- see CDfgL()'s comment; same non-termination
                      # risk on ill-conditioned (e.g. near-degenerate feature)
                      # community data, and a hang here can't be caught by
                      # tryCatch() around the calling correction method either.
@@ -703,7 +770,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
       X1.gi.cor <- X1.glist[[g]] %*% coef.A + coef.B.gi
       
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
-      X.gi.sca <- safe_scale(X.gi)
+      X.gi.sca <- safe_scale(X.gi)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
       S_i <- cov(X.gi.sca)
       S.list[[g]] <- S_i
     }
@@ -856,7 +923,7 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
         X.gi <- rbind(X0.glist[[i]], X1.cor.glist[[i]])
         
         # get empirical covariance matrix
-        X.gi.sca <- safe_scale(X.gi)
+        X.gi.sca <- safe_scale(X.gi)  # [PIPELINE FIX 4]: was scale(X, center = TRUE, scale = TRUE)
         S_i <- cov(X.gi.sca)
         Theta_i <- Theta.list[[i]]
         E.num.gi <- sum(Theta_i[upper.tri(Theta_i, diag = FALSE)] != 0)
@@ -892,7 +959,15 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
 # Delete outliers in data 
 # --------------------------
 DelOutlier <- function(X) {
-  pca.dat <- prcomp(X, center = TRUE, scale. = TRUE, rank. = 3)
+  # [PIPELINE FIX 4] prcomp(X, scale. = TRUE) does its own internal zero-variance check and
+  # hard-errors ("cannot rescale a constant/zero column to unit variance")
+  # rather than degrading gracefully like plain scale() -- a real risk here
+  # since X is a whole batch's full feature matrix, checked before community
+  # detection narrows anything down. Centering/scaling via safe_scale() first
+  # and passing center = FALSE, scale. = FALSE gives prcomp() already-clean
+  # input, so it never runs that check; results are identical to
+  # prcomp(X, center = TRUE, scale. = TRUE) whenever no column is degenerate.
+  pca.dat <- prcomp(safe_scale(X), center = FALSE, scale. = FALSE, rank. = 3)
   pca.dat.varX <- pca.dat$x
   delsampIdx <- c()
   for (i in c(1: 3)) {
