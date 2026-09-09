@@ -1275,6 +1275,17 @@
       "Author": "Martin Morgan [aut], Valerie Obenchain [aut], Jim Hester [aut], Hervé Pagès [aut, cre]",
       "Maintainer": "Hervé Pagès <hpages.on.github@gmail.com>"
     },
+    "WaveICA": {
+      "Package": "WaveICA",
+      "Version": "0.1.0",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "dengkuistat",
+      "RemoteRepo": "WaveICA",
+      "RemoteRef": "master",
+      "RemoteSha": "55ccd67a8b54c8d1dc5bec9138ee7b2d397c8c49"
+    },
     "WaveICA2.0": {
       "Package": "WaveICA2.0",
       "Version": "0.1.0",
@@ -2273,6 +2284,12 @@
       "Maintainer": "Winston Chang <winston@posit.co>",
       "Repository": "CRAN"
     },
+    "fdrtool": {
+      "Package": "fdrtool",
+      "Version": "1.2.18",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "foreach": {
       "Package": "foreach",
       "Version": "1.5.2",
@@ -2540,6 +2557,12 @@
       "Author": "Andrie de Vries [aut, cre], Brian D. Ripley [aut] (author of package tree)",
       "Maintainer": "Andrie de Vries <apdevries@gmail.com>",
       "Repository": "RSPM"
+    },
+    "ggfortify": {
+      "Package": "ggfortify",
+      "Version": "0.4.23",
+      "Source": "Repository",
+      "Repository": "CRAN"
     },
     "ggplot2": {
       "Package": "ggplot2",
@@ -3661,6 +3684,12 @@
       "Maintainer": "Jan Marvin Garbuszus <jan.garbuszus@ruhr-uni-bochum.de>",
       "Repository": "CRAN"
     },
+    "pROC": {
+      "Package": "pROC",
+      "Version": "1.19.1",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
     "pcaMethods": {
       "Package": "pcaMethods",
       "Version": "2.2.0",
@@ -3781,6 +3810,12 @@
       "BugReports": "https://github.com/r-lib/pkgconfig/issues",
       "Encoding": "UTF-8",
       "NeedsCompilation": "no",
+      "Repository": "CRAN"
+    },
+    "plsdepot": {
+      "Package": "plsdepot",
+      "Version": "0.3.1",
+      "Source": "Repository",
       "Repository": "CRAN"
     },
     "plyr": {
@@ -4200,6 +4235,12 @@
       "NeedsCompilation": "no",
       "Author": "Hadley Wickham [aut], Thomas Lin Pedersen [cre, aut] (<https://orcid.org/0000-0002-5147-4711>), Dana Seidel [aut], Posit Software, PBC [cph, fnd] (03wc8by49)",
       "Maintainer": "Thomas Lin Pedersen <thomas.pedersen@posit.co>",
+      "Repository": "CRAN"
+    },
+    "scatterplot3d": {
+      "Package": "scatterplot3d",
+      "Version": "0.3-45",
+      "Source": "Repository",
       "Repository": "CRAN"
     },
     "snow": {

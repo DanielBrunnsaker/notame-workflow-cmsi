@@ -992,3 +992,54 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NULL, wf = "h
 
   list(pre = combined, post = combined, obs_mask = obs_mask)
 }
+
+
+# Original WaveICA (Deng et al.), as an alternative to WaveICA2.0 (waveica).
+# Unlike WaveICA2.0, this version takes batch labels directly rather than
+# using injection order as a proxy for batch structure -- preferable when
+# batch labels are known and reliable, since it tests ICA components against
+# the real grouping variable instead of a continuous stand-in for it.
+#
+# Defaults below (wf, K, t, t2, alpha) are the package's own defaults, not
+# tuned for this pipeline -- there was no way to verify or tune this wrapper
+# offline (the package isn't installed anywhere this session had access to,
+# unlike WaveICA2.0/CordBat), so treat this method's first real run as
+# genuinely first-run, not just "should work like the others already tested."
+#
+# `group` (optional biological comparison group, protected from removal via
+# `t2`) is intentionally not exposed here -- this pipeline's notame format
+# has no biological-group column to supply it from. Left as the package's
+# own default (NULL); add a parameter for it later if that data becomes
+# available.
+#
+# Note: this function's `alpha` (0-1, trade-off between sample-wise and
+# variable-wise independence in the ICA step) is unrelated to
+# correct_waveica()'s `alpha` (0-1, significance threshold for flagging a
+# component as injection-order-associated) -- same parameter name in both
+# packages, different meaning. Kept as WAVEICA_V1_ALPHA (distinct from
+# WAVEICA_ALPHA) in notame-workflow.r specifically to avoid conflating them.
+correct_waveica_v1 <- function(data, wf = "haar", K = 20, t = 0.05, t2 = 0.05, alpha = 0) {
+  suppressPackageStartupMessages(library(WaveICA))
+
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
+
+  message("==> WaveICA (v1) correction (wf=", wf, ", K=", K, ", t=", t,
+          ", t2=", t2, ", alpha=", alpha, ")")
+  result <- WaveICA(
+    data  = t(assay(data, 1)),
+    wf    = wf,
+    batch = as.character(colData(data)$Batch),
+    group = NULL,
+    K     = K,
+    t     = t,
+    t2    = t2,
+    alpha = alpha
+  )
+  assay(data, 1, withDimnames = FALSE) <- t(result$data_wave)
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(data, obs_mask)
+
+  list(pre = combined, post = combined, obs_mask = obs_mask)
+}

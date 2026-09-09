@@ -39,6 +39,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   loess_sample_span, loess_sample_min_obs,
                                   loess_min_qc_per_batch, loess_min_ltqc_validate,
                                   waveica_alpha, waveica_cutoff, waveica_k,
+                                  waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
                                   save_pre_correction_plots,
                                   config_file = "", raw_sample_type_rules = NULL) {
@@ -131,6 +132,10 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "WAVEICA_ALPHA",           waveica_alpha,  min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_CUTOFF",          waveica_cutoff, min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_K",               waveica_k,      min = 1, allow_na = TRUE)
+  problems <- check_numeric(problems, "WAVEICA_V1_K",            waveica_v1_k,     min = 1)
+  problems <- check_numeric(problems, "WAVEICA_V1_T",            waveica_v1_t,     min = 0, max = 1)
+  problems <- check_numeric(problems, "WAVEICA_V1_T2",           waveica_v1_t2,    min = 0, max = 1)
+  problems <- check_numeric(problems, "WAVEICA_V1_ALPHA",        waveica_v1_alpha, min = 0, max = 1)
 
   # Numeric parameters: optional (NA means disabled)
   problems <- check_numeric(problems, "BLANK_RATIO",    blank_ratio,    min = 0,           allow_na = TRUE)

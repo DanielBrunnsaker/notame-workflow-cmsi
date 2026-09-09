@@ -227,6 +227,15 @@ directly analogous substitute.
 | `LOESS_MIN_LTQC_VALIDATE` | No | `3` | Min ltQC samples a batch needs to validate the QC-free trial correction in `loess_samples_combat` / `loess_samples_limma` (batches below `LOESS_MIN_QC_PER_BATCH` only). The trial is kept if it improves the ltQC/Sample D-ratio (`MAD(ltQC)/MAD(Sample)`, lower is better) versus the uncorrected batch, discarded otherwise — D-ratio rather than raw ltQC RSD, since any real drift correction shrinks sample variance somewhat, so it only credits a disproportionate improvement in ltQC relative to Sample. Batches with fewer ltQC than this are left uncorrected — there's no way to validate the trial |
 | `LOESS_VALIDATE_SAMPLES_CORRECTION` | No | `TRUE` | Set to `FALSE` to skip ltQC validation entirely for `loess_samples_combat` / `loess_samples_limma`: any batch below `LOESS_MIN_QC_PER_BATCH` then always gets the QC-free samples-based correction, regardless of ltQC availability or outcome. Reintroduces the risk the validation step exists to catch — use deliberately |
 | `CORDBAT_REF_BATCH` | No | auto | Reference batch ID for CordBat methods. All other batches are corrected onto this batch. Defaults to auto-selecting the batch with the lowest median feature RSD |
+| `WAVEICA_ALPHA` | No | `0.05` | Significance threshold WaveICA2.0 (`waveica`) uses to flag a component as injection-order-associated. Lower = stricter/less aggressive |
+| `WAVEICA_CUTOFF` | No | `0.10` | Threshold (0-1) for how much of a wavelet level's variance must associate with injection order before it's treated as technical, in `waveica` |
+| `WAVEICA_K` | No | auto (`2 x n_batches`) | Number of independent components `waveica` decomposes into |
+| `WAVEICA_WF` | No | `haar` | Wavelet family for `waveica` |
+| `WAVEICA_V1_WF` | No | `haar` | Wavelet family for `waveica_v1` (the original WaveICA — separate setting from `WAVEICA_WF`, different package) |
+| `WAVEICA_V1_K` | No | `20` | Max components `waveica_v1`'s ICA step decomposes into |
+| `WAVEICA_V1_T` | No | `0.05` | Threshold (0-1) for considering a component associated with batch in `waveica_v1` — tested against real batch labels directly, unlike `WAVEICA_CUTOFF`'s injection-order proxy |
+| `WAVEICA_V1_T2` | No | `0.05` | Threshold (0-1) for considering a component associated with a biological comparison group in `waveica_v1`. Currently inert — this pipeline has no biological-group column to supply `waveica_v1`'s optional `group` argument |
+| `WAVEICA_V1_ALPHA` | No | `0` | Trade-off (0-1) between sample-wise and variable-wise independence in `waveica_v1`'s ICA step. Not the same parameter as `WAVEICA_ALPHA` — same name, unrelated meaning, different package |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
 | `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
 
@@ -250,7 +259,8 @@ directly analogous substitute.
 | `loess_global_median` | Per-batch LOESS drift correction (QC-based) followed by global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. | `LOESS_SPAN` |
 | `cordbat_only` | CordBat batch correction only (no drift correction). Uses a Gaussian Graphical Model built from correlated feature communities to learn per-feature scale and offset parameters. Requires a reference batch (auto-selected by default). | `CORDBAT_REF_BATCH` |
 | `loess_cordbat` | Per-batch LOESS drift correction, always QC-free (fit on biological samples, `LOESS_SAMPLE_SPAN`/`LOESS_SAMPLE_MIN_OBS`) — deliberately, since CordBat's own between-batch step is also fit on biological samples rather than QC, so the combined method stays QC-free end to end rather than mixing a QC-anchored drift step with a QC-free batch-correction step. Followed by CordBat batch correction. Requires a reference batch (auto-selected by default, from QC-quality where available). | `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`, `CORDBAT_REF_BATCH` |
-| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). | — |
+| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). Uses injection order as a proxy for batch structure rather than batch labels directly. | `WAVEICA_ALPHA`, `WAVEICA_CUTOFF`, `WAVEICA_K`, `WAVEICA_WF` |
+| `waveica_v1` | Original WaveICA (Deng et al.) — wavelet+ICA correction using real batch labels directly, rather than the injection-order proxy WaveICA2.0 uses. May be preferable when batch labels are known and reliable. Defaults are the package's own, not tuned for this pipeline. | `WAVEICA_V1_WF`, `WAVEICA_V1_K`, `WAVEICA_V1_T`, `WAVEICA_V1_T2`, `WAVEICA_V1_ALPHA` |
 
 ## Normalisation
 

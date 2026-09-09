@@ -96,7 +96,7 @@ if both are set for the same parameter.
                         Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
                                  batchcorr | combat_only | loess_combat | loess_samples_combat |
                                  loess_limma | loess_samples_limma | loess_feature_median | loess_global_median |
-                                 cordbat_only | loess_cordbat | waveica
+                                 cordbat_only | loess_cordbat | waveica | waveica_v1
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -234,6 +234,40 @@ if both are set for the same parameter.
                         above is based on the published method rather than inspection of this
                         specific package version's source, so confirm empirically on your data.
 
+  WAVEICA_V1_WF         Wavelet family for waveica_v1 (the original WaveICA, not WaveICA2.0).
+                        Same meaning as WAVEICA_WF, separate setting since the two methods are
+                        independent packages.
+                        Default: haar
+
+  WAVEICA_V1_K          Maximum number of components waveica_v1's ICA step decomposes into.
+                        Default: 20
+
+  WAVEICA_V1_T          Threshold (0-1) for considering an ICA component associated with batch
+                        in waveica_v1. Unlike WAVEICA_CUTOFF (WaveICA2.0), this tests components
+                        directly against the real batch labels rather than injection order as a
+                        proxy for them.
+                        Default: 0.05
+
+  WAVEICA_V1_T2         Threshold (0-1) for considering an ICA component associated with a
+                        biological comparison group in waveica_v1. Not currently used in
+                        practice -- this pipeline has no biological-group column to supply
+                        waveica_v1's optional `group` argument, so that protection is inactive
+                        regardless of this setting. Kept for parity with the package's own
+                        parameters.
+                        Default: 0.05
+
+  WAVEICA_V1_ALPHA      Trade-off (0-1) between sample-wise and variable-wise independence in
+                        waveica_v1's ICA step. Not the same parameter as WAVEICA_ALPHA
+                        (WaveICA2.0's significance threshold for flagging a component) --
+                        same name, unrelated meaning, different package.
+                        Default: 0
+
+                        Note: waveica_v1 uses real batch labels directly rather than injection
+                        order as a proxy for batch structure, which may make it a better fit
+                        when batch labels are known and reliable (see waveica_v1 in the
+                        correction-methods list below). Defaults above are the package's own
+                        defaults, not tuned for this pipeline specifically.
+
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
                         Default: none
@@ -326,7 +360,10 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #   "loess_cordbat"       — per-batch QC-free LOESS drift correction (fit on samples, always —
 #                            CordBat's own between-batch step is also QC-free, fit on samples)
 #                            + CordBat batch correction
-#   "waveica"             — WaveICA 2.0 wavelet-based correction
+#   "waveica"             — WaveICA 2.0 wavelet-based correction (injection order as a proxy
+#                            for batch structure, no batch labels used)
+#   "waveica_v1"          — original WaveICA wavelet-based correction, using real batch labels
+#                            directly instead of an injection-order proxy
 CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
 
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
@@ -344,6 +381,11 @@ WAVEICA_CUTOFF  <- as.numeric(get_env("WAVEICA_CUTOFF", "0.10"))
 waveica_k_env   <- get_env("WAVEICA_K", "")
 WAVEICA_K       <- if (waveica_k_env == "") NULL else as.integer(waveica_k_env)
 WAVEICA_WF      <- get_env("WAVEICA_WF", "haar")
+WAVEICA_V1_WF     <- get_env("WAVEICA_V1_WF", "haar")
+WAVEICA_V1_K      <- as.integer(get_env("WAVEICA_V1_K", "20"))
+WAVEICA_V1_T      <- as.numeric(get_env("WAVEICA_V1_T", "0.05"))
+WAVEICA_V1_T2     <- as.numeric(get_env("WAVEICA_V1_T2", "0.05"))
+WAVEICA_V1_ALPHA  <- as.numeric(get_env("WAVEICA_V1_ALPHA", "0"))
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
@@ -366,6 +408,8 @@ run_preflight_checks(
   loess_min_ltqc_validate = LOESS_MIN_LTQC_VALIDATE,
   waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF,
   waveica_k = if (is.null(WAVEICA_K)) NA_integer_ else WAVEICA_K,
+  waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
+  waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
   config_file = config_file, raw_sample_type_rules = config$sample_type_rules
@@ -717,7 +761,10 @@ for (method in CORRECTION_METHODS) {
                                              CORDBAT_REF_BATCH),
       waveica      = correct_waveica(data, alpha = WAVEICA_ALPHA, cutoff = WAVEICA_CUTOFF,
                                       K = WAVEICA_K, wf = WAVEICA_WF),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica")
+      waveica_v1   = correct_waveica_v1(data, wf = WAVEICA_V1_WF, K = WAVEICA_V1_K,
+                                         t = WAVEICA_V1_T, t2 = WAVEICA_V1_T2,
+                                         alpha = WAVEICA_V1_ALPHA),
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica, waveica_v1")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
