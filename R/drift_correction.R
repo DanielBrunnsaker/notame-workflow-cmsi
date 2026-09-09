@@ -107,8 +107,15 @@ loess_correct_batch <- function(se_b, span = 0.75) {
 # QC coverage (and ltQC coverage) can vary batch to batch even within one
 # dataset (e.g. a plate with zero QC injections), so the choice is made per
 # batch rather than once for the whole run.
+#
+# validate = FALSE skips step 2's ltQC check entirely and always keeps the
+# samples-based trial, regardless of ltQC availability or what it shows. This
+# reintroduces the failure mode the validation step exists to catch (the
+# trial can look fine on ltQC while still compressing real biological
+# signal) -- use deliberately, not as a default.
 loess_correct_batch_hybrid <- function(se_b, qc_span, sample_span, sample_min_obs,
-                                        min_qc_per_batch = 4, min_ltqc_validate = 3) {
+                                        min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                        validate = TRUE) {
   cd    <- colData(se_b)
   n_qc  <- sum(cd$QC == "QC")
   batch <- unique(cd$Batch)
@@ -117,6 +124,12 @@ loess_correct_batch_hybrid <- function(se_b, qc_span, sample_span, sample_min_ob
     message("  Batch ", batch, ": ", n_qc, " QC sample(s) (>= ", min_qc_per_batch,
             ") — using QC-based LOESS")
     return(loess_correct_batch(se_b, span = qc_span))
+  }
+
+  if (!validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") — applying QC-free LOESS on samples unconditionally (validation disabled)")
+    return(loess_correct_batch_samples(se_b, span = sample_span, min_obs = sample_min_obs))
   }
 
   n_ltqc <- sum(cd$QC == "ltQC")

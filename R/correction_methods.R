@@ -144,18 +144,21 @@ correct_loess_combat <- function(data, loess_span) {
 }
 
 correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_obs,
-                                          min_qc_per_batch = 4, min_ltqc_validate = 3) {
+                                          min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                          validate_samples_correction = TRUE) {
   suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples ",
-          "validated against ltQC, else uncorrected)")
+  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
+          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
+          else " applied unconditionally -- validation disabled)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
       loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
                                   sample_min_obs = sample_min_obs,
                                   min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate)
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  validate = validate_samples_correction)
     }),
     merge = "samples"
   )
@@ -373,18 +376,21 @@ correct_loess_limma <- function(data, loess_span) {
 }
 
 correct_loess_samples_limma <- function(data, qc_span, sample_span, sample_min_obs,
-                                         min_qc_per_batch = 4, min_ltqc_validate = 3) {
+                                         min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                         validate_samples_correction = TRUE) {
   suppressPackageStartupMessages(library(limma))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples ",
-          "validated against ltQC, else uncorrected)")
+  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
+          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
+          else " applied unconditionally -- validation disabled)")
   combined <- merge_notame_sets(
     lapply(split_by_batch(data), function(se_b) {
       loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
                                   sample_min_obs = sample_min_obs,
                                   min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate)
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  validate = validate_samples_correction)
     }),
     merge = "samples"
   )
