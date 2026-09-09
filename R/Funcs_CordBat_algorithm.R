@@ -203,6 +203,26 @@ soft <- function(x, lambda){
 }
 
 # -------------------
+# safe column scaling
+# -------------------
+# Drop-in replacement for scale(X, center = TRUE, scale = TRUE). A
+# zero-variance column divides by an SD of 0 under plain scale(), becoming
+# entirely NaN; that NaN then flows into cov()/graphicalLasso()/CDfgL() and
+# eventually crashes with "missing value where TRUE/FALSE needed" once a NaN
+# coefficient makes an == comparison undefined. A zero-variance feature (which
+# DelOutlier()'s per-batch/per-group outlier-row removal can produce even from
+# a feature with real variance in the original data) carries no informative
+# variation to begin with, so its scaled values are set to 0 here instead of
+# NaN -- a standard convention, and the only change from plain scale().
+safe_scale <- function(X) {
+  Xs <- scale(X, center = TRUE, scale = TRUE)
+  zero_var <- attr(Xs, "scaled:scale") == 0
+  zero_var[is.na(zero_var)] <- FALSE
+  if (any(zero_var)) Xs[, zero_var] <- 0
+  Xs
+}
+
+# -------------------
 # coordinate descent 
 # -------------------
 CDfgL <- function(V, beta_i, u, rho){
@@ -277,7 +297,7 @@ graphicalLasso <- function(X, rho){
   N <- nrow(X)
   p <- ncol(X)
   # centered and scaling
-  X <- scale(X, center = TRUE, scale = TRUE)
+  X <- safe_scale(X)
   # get covariance matrix
   S <- cov(X)
   
@@ -476,7 +496,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
         Theta <- c.mat$Theta
         
         # compute error for CV set
-        X.cv.sca <- scale(X.cv, center = TRUE, scale = TRUE)
+        X.cv.sca <- safe_scale(X.cv)
         S.cv <- cov(X.cv.sca)
         
         k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -488,7 +508,7 @@ selrho.useCVBIC <- function(X, print.detail = T) {
       Theta <- c.mat$Theta
       
       # compute error for CV set
-      X.sca <- scale(X, center = TRUE, scale = TRUE)
+      X.sca <- safe_scale(X)
       S <- cov(X.sca)
       
       k <- sum(Theta[upper.tri(Theta, diag = FALSE)] != 0)
@@ -549,7 +569,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
+      X.gi.sca <- safe_scale(X.gi)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -578,7 +598,7 @@ update.CorrectCoef <- function(X0.glist, X1.glist, Theta.list,
       X1.gi.cor <- X1.glist[[g]] %*% A + B_gi
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
       
-      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
+      X.gi.sca <- safe_scale(X.gi)
       X.gi.sca.attr <- attributes(X.gi.sca)
       Mu_g <- X.gi.sca.attr$`scaled:center`
       Sigma_g <- X.gi.sca.attr$`scaled:scale`
@@ -655,7 +675,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
   W.list <- list()
   for (g in c(1: G)) {
     X.gi <- rbind(X0.glist[[g]], X1.cor.glist[[g]])
-    X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
+    X.gi.sca <- safe_scale(X.gi)
     S0_gi <- cov(X.gi.sca)
     W_i <- S0_gi + penal.rho * diag(1, p)
     W.list[[g]] <- W_i
@@ -683,7 +703,7 @@ BEgLasso <- function(X0.glist, X1.glist, penal.rho, penal.ksi,
       X1.gi.cor <- X1.glist[[g]] %*% coef.A + coef.B.gi
       
       X.gi <- rbind(X0.glist[[g]], X1.gi.cor)
-      X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
+      X.gi.sca <- safe_scale(X.gi)
       S_i <- cov(X.gi.sca)
       S.list[[g]] <- S_i
     }
@@ -836,7 +856,7 @@ findBestPara <- function(X0.glist, X1.glist, penal.rho, eps) {
         X.gi <- rbind(X0.glist[[i]], X1.cor.glist[[i]])
         
         # get empirical covariance matrix
-        X.gi.sca <- scale(X.gi, center = TRUE, scale = TRUE)
+        X.gi.sca <- safe_scale(X.gi)
         S_i <- cov(X.gi.sca)
         Theta_i <- Theta.list[[i]]
         E.num.gi <- sum(Theta_i[upper.tri(Theta_i, diag = FALSE)] != 0)
