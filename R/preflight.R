@@ -9,9 +9,9 @@
 
 VALID_CORRECTION_METHODS <- c(
   "none", "notame", "pmp_qcrsc", "pmp_qcrsc_scale", "pmp_qcrsc_feature_scale",
-  "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat",
+  "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat", "auto_combat",
   "loess_limma", "loess_samples_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
-  "loess_cordbat", "waveica"
+  "loess_cordbat", "waveica", "waveica_v1"
 )
 
 # Appends a range-check error for `value` to `problems` if invalid.
