@@ -1,0 +1,41 @@
+# Local, machine-specific renv artifacts -- never needed in the build context.
+# The Dockerfile builds its own library inside the image via
+# RENV_PATHS_LIBRARY=/renv/library (a container-internal path); a populated
+# local renv/library/ here is leftover from running renv commands in a
+# throwaway container with this repo bind-mounted, and can be large enough
+# (and contain file types like symlinks) to break the build-context transfer
+# outright, not just slow it down.
+renv/library/
+renv/staging/
+renv/python/
+
+# Git metadata -- never needed inside the image
+.git/
+.gitignore
+
+# Data and outputs -- not for the image, and can be large
+intermediates/
+output/
+*.xlsx
+*.csv
+*.rds
+*.RData
+
+# Logs
+*.log
+log.txt
+
+# R environment / editor cruft
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Assistant/editor tooling, not part of the pipeline
+.claude/
+.positai
+.aider*
