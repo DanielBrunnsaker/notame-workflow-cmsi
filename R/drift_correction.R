@@ -375,21 +375,34 @@ cv_score_feature <- function(x, y, predict_fn) {
 # Raw per-feature LOO-CV scores for every candidate on train_idx columns --
 # NOT aggregated here, so callers can pool rows across multiple batches
 # before aggregating (see auto_select_drift_correction()). Returns a
-# features x candidates matrix.
-raw_feature_cv_scores <- function(mat, train_idx, inj, candidates, min_obs = 4) {
-  x_tr   <- inj[train_idx]
-  n_feat <- nrow(mat)
-  scores <- matrix(NA_real_, n_feat, length(candidates))
+# features x candidates matrix. This is by far the most expensive part of
+# auto_combat (features x candidates x held-out points, easily 100k+ small
+# fits on real data), so progress is reported periodically -- a handful of
+# messages at fixed intervals, not a redrawing terminal progress bar, since
+# this runs inside Docker where output is a flat log rather than a live TTY
+# (a \r-redrawing bar would show up as one log line per update instead of
+# overwriting in place). progress_label, if given, prefixes each update
+# (e.g. the batch name) so multi-batch runs stay distinguishable in the log.
+raw_feature_cv_scores <- function(mat, train_idx, inj, candidates, min_obs = 4,
+                                   progress_label = NULL) {
+  x_tr     <- inj[train_idx]
+  n_feat   <- nrow(mat)
+  scores   <- matrix(NA_real_, n_feat, length(candidates))
+  progress_every <- max(1L, round(n_feat / 10))
+  prefix <- if (is.null(progress_label)) "  " else paste0("  ", progress_label, ": ")
   for (i in seq_len(n_feat)) {
     y_tr <- as.numeric(mat[i, train_idx])
     # y_tr > 0: excludes exact-zero abundances (msdial_to_notame()/
     # xcms_to_notame() clamp negative values to 0, not NA) so log2() in
     # fit_predict_loess()/fit_predict_huber() never sees a non-positive input.
-    ok   <- is.finite(y_tr) & is.finite(x_tr) & y_tr > 0
-    if (sum(ok) < min_obs) next
-    xf <- x_tr[ok]; yf <- y_tr[ok]
-    for (ci in seq_along(candidates))
-      scores[i, ci] <- cv_score_feature(xf, yf, candidates[[ci]]$predict_fn)
+    ok <- is.finite(y_tr) & is.finite(x_tr) & y_tr > 0
+    if (sum(ok) >= min_obs) {
+      xf <- x_tr[ok]; yf <- y_tr[ok]
+      for (ci in seq_along(candidates))
+        scores[i, ci] <- cv_score_feature(xf, yf, candidates[[ci]]$predict_fn)
+    }
+    if (i %% progress_every == 0 || i == n_feat)
+      message(prefix, "LOO-CV progress: ", round(100 * i / n_feat), "% (", i, "/", n_feat, " features)")
   }
   colnames(scores) <- vapply(candidates, `[[`, character(1), "name")
   scores
@@ -475,12 +488,40 @@ auto_select_drift_correction <- function(data,
       se_b   <- batches[[bi]]
       qc_idx <- which(colData(se_b)$QC == "QC")
       raw_feature_cv_scores(assay(se_b, 1), qc_idx, as.numeric(colData(se_b)$Injection_order),
-                             qc_candidates, min_obs = min_cv_obs)
+                             qc_candidates, min_obs = min_cv_obs,
+                             progress_label = paste0("Batch ", batch_names[bi]))
     }))
     agg <- apply(pooled, 2, median, na.rm = TRUE)
+
+    # ltQC/Sample D-ratio alongside the LOO-CV score, for every candidate --
+    # informational only, does not affect which candidate is selected below
+    # (LOO-CV on QC is already a legitimate, non-circular criterion for this
+    # tier). Printed so the QC-based selection can be sanity-checked against
+    # the fully independent ltQC reference, same reasoning as ltqc_permanova_*
+    # alongside qc_permanova_* in qc_metrics.R: if a candidate's LOO-CV score
+    # improves but its ltQC/Sample D-ratio doesn't agree, that disagreement is
+    # itself worth noticing, not something to average away. NA (printed as
+    # such) if no QC-tier batch has enough ltQC to compute it.
+    qc_dratios <- vapply(qc_candidates, function(cand) {
+      per_batch <- vapply(qc_batches_idx, function(bi) {
+        se_b   <- batches[[bi]]
+        qc_idx <- which(colData(se_b)$QC == "QC")
+        mat_trial <- apply_drift_candidate_to_batch(assay(se_b, 1), qc_idx,
+                                                      as.numeric(colData(se_b)$Injection_order),
+                                                      cand$predict_fn, min_obs = min_cv_obs,
+                                                      quiet = TRUE)
+        se_trial <- se_b
+        assay(se_trial, 1, withDimnames = FALSE) <- mat_trial
+        eval_ltqc_dratio(se_trial)
+      }, numeric(1))
+      suppressWarnings(median(per_batch, na.rm = TRUE))
+    }, numeric(1))
+
     for (ci in seq_along(qc_candidates))
       message("    ", qc_candidates[[ci]]$name, ": pooled LOO-CV score = ",
-              if (is.na(agg[ci])) "NA" else signif(agg[ci], 4))
+              if (is.na(agg[ci])) "NA" else signif(agg[ci], 4),
+              ", ltQC/Sample D-ratio = ",
+              if (is.na(qc_dratios[ci])) "NA (no ltQC available)" else round(qc_dratios[ci], 4))
     if (all(is.na(agg))) {
       message("  No candidate could be evaluated across QC-based batches",
               " (too few QC observations per feature)")
