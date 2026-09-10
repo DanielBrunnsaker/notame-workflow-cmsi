@@ -193,6 +193,60 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# Auto-selected drift correction (see auto_select_drift_correction() in
+# R/drift_correction.R) + ComBat between-batch correction. A new, separate
+# method rather than a change to loess_combat/loess_samples_combat -- the
+# intent is to validate this against the fixed-method ones before it
+# potentially replaces them, not to silently change what an existing named
+# method does. One method is chosen for all QC-based batches and one for all
+# QC-free batches (pooling evidence across batches, not decided per batch) --
+# see auto_select_drift_correction()'s own documentation for why.
+correct_auto_combat <- function(data, loess_spans, huber_ks, sample_loess_spans, sample_huber_ks,
+                                 min_qc_per_batch = 4, min_ltqc_validate = 3, min_cv_obs = 4) {
+  suppressPackageStartupMessages(library(sva))
+
+  message("==> Drift correction (auto-selected: one method for all QC-based batches, one for ",
+          "all QC-free batches, via pooled CV on QC / held-out ltQC-Sample D-ratio)")
+  combined <- merge_notame_sets(
+    auto_select_drift_correction(data, loess_spans = loess_spans, huber_ks = huber_ks,
+                                  sample_loess_spans = sample_loess_spans,
+                                  sample_huber_ks = sample_huber_ks,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  min_cv_obs = min_cv_obs),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before ComBat which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (ComBat)")
+    assay(combined, 1, withDimnames = FALSE) <- ComBat(
+      dat   = assay(combined, 1),
+      batch = as.factor(colData(combined)$Batch)
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 correct_loess_feature_median <- function(data, loess_span) {
 
   # LOESS handles NAs natively — no LoD/2 needed before this step

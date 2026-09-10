@@ -29,6 +29,19 @@ check_numeric <- function(problems, name, value, min = NULL, max = NULL, allow_n
   problems
 }
 
+# Vector version for comma-separated parameter lists (e.g. AUTO_LOESS_SPANS):
+# each element is range-checked individually via check_numeric(); an empty
+# or all-NA vector (e.g. from a malformed/empty env var) is its own error,
+# since check_numeric() alone can't tell "no candidates" from "one bad one".
+check_numeric_list <- function(problems, name, values, min = NULL, max = NULL) {
+  if (length(values) == 0 || all(is.na(values))) {
+    problems <- c(problems, paste0(name, " must be a non-empty comma-separated list of numbers"))
+    return(problems)
+  }
+  for (v in values) problems <- check_numeric(problems, name, v, min = min, max = max)
+  problems
+}
+
 run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sample_sheet,
                                   project_folder, column, polarity,
                                   correction_methods, normalization,
@@ -38,6 +51,9 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   rsd_threshold, ruv_k, serrf_num, loess_span,
                                   loess_sample_span, loess_sample_min_obs,
                                   loess_min_qc_per_batch, loess_min_ltqc_validate,
+                                  auto_loess_spans, auto_huber_ks,
+                                  auto_sample_loess_spans, auto_sample_huber_ks,
+                                  auto_min_qc_per_batch, auto_min_ltqc_validate, auto_min_cv_obs,
                                   waveica_alpha, waveica_cutoff, waveica_k,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
@@ -129,6 +145,13 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "LOESS_SAMPLE_MIN_OBS",    loess_sample_min_obs,   min = 4)
   problems <- check_numeric(problems, "LOESS_MIN_QC_PER_BATCH",  loess_min_qc_per_batch, min = 1)
   problems <- check_numeric(problems, "LOESS_MIN_LTQC_VALIDATE", loess_min_ltqc_validate, min = 2)
+  problems <- check_numeric_list(problems, "AUTO_LOESS_SPANS",        auto_loess_spans,        min = 0, max = 1)
+  problems <- check_numeric_list(problems, "AUTO_HUBER_KS",           auto_huber_ks,           min = 0)
+  problems <- check_numeric_list(problems, "AUTO_SAMPLE_LOESS_SPANS", auto_sample_loess_spans, min = 0, max = 1)
+  problems <- check_numeric_list(problems, "AUTO_SAMPLE_HUBER_KS",    auto_sample_huber_ks,    min = 0)
+  problems <- check_numeric(problems, "AUTO_MIN_QC_PER_BATCH",  auto_min_qc_per_batch,  min = 1)
+  problems <- check_numeric(problems, "AUTO_MIN_LTQC_VALIDATE", auto_min_ltqc_validate, min = 2)
+  problems <- check_numeric(problems, "AUTO_MIN_CV_OBS",        auto_min_cv_obs,        min = 4)
   problems <- check_numeric(problems, "WAVEICA_ALPHA",           waveica_alpha,  min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_CUTOFF",          waveica_cutoff, min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_K",               waveica_k,      min = 1, allow_na = TRUE)

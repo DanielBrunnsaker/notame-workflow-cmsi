@@ -1275,17 +1275,6 @@
       "Author": "Martin Morgan [aut], Valerie Obenchain [aut], Jim Hester [aut], Hervé Pagès [aut, cre]",
       "Maintainer": "Hervé Pagès <hpages.on.github@gmail.com>"
     },
-    "WaveICA": {
-      "Package": "WaveICA",
-      "Version": "0.1.0",
-      "Source": "GitHub",
-      "RemoteType": "github",
-      "RemoteHost": "api.github.com",
-      "RemoteUsername": "dengkuistat",
-      "RemoteRepo": "WaveICA",
-      "RemoteRef": "master",
-      "RemoteSha": "55ccd67a8b54c8d1dc5bec9138ee7b2d397c8c49"
-    },
     "WaveICA2.0": {
       "Package": "WaveICA2.0",
       "Version": "0.1.0",
@@ -1828,12 +1817,6 @@
       "Author": "Gábor Csárdi [aut, cre], Hadley Wickham [ctb], Kirill Müller [ctb], Salim Brüggemann [ctb] (<https://orcid.org/0000-0002-5329-5987>), Posit Software, PBC [cph, fnd]",
       "Maintainer": "Gábor Csárdi <gabor@posit.co>",
       "Repository": "RSPM"
-    },
-    "clue": {
-      "Package": "clue",
-      "Version": "0.3-68",
-      "Source": "Repository",
-      "Repository": "CRAN"
     },
     "codetools": {
       "Package": "codetools",
@@ -3690,12 +3673,6 @@
       "Maintainer": "Jan Marvin Garbuszus <jan.garbuszus@ruhr-uni-bochum.de>",
       "Repository": "CRAN"
     },
-    "pROC": {
-      "Package": "pROC",
-      "Version": "1.19.1",
-      "Source": "Repository",
-      "Repository": "CRAN"
-    },
     "pcaMethods": {
       "Package": "pcaMethods",
       "Version": "2.2.0",
@@ -3816,12 +3793,6 @@
       "BugReports": "https://github.com/r-lib/pkgconfig/issues",
       "Encoding": "UTF-8",
       "NeedsCompilation": "no",
-      "Repository": "CRAN"
-    },
-    "plsdepot": {
-      "Package": "plsdepot",
-      "Version": "0.3.1",
-      "Source": "Repository",
       "Repository": "CRAN"
     },
     "plyr": {

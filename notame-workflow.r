@@ -96,7 +96,7 @@ if both are set for the same parameter.
                         Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
                                  batchcorr | combat_only | loess_combat | loess_samples_combat |
                                  loess_limma | loess_samples_limma | loess_feature_median | loess_global_median |
-                                 cordbat_only | loess_cordbat | waveica | waveica_v1
+                                 cordbat_only | loess_cordbat | waveica | waveica_v1 | auto_combat
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -197,6 +197,42 @@ if both are set for the same parameter.
                         look fine on ltQC while still compressing real biological signal) — use
                         deliberately, not as a default.
                         Default: TRUE
+
+  AUTO_LOESS_SPANS      Comma-separated LOESS spans auto_combat evaluates as candidates when QC is
+                        available (leave-one-out CV) or samples-only (held-out ltQC/Sample D-ratio
+                        — set together with AUTO_HUBER_KS as one QC-based candidate pool; see
+                        AUTO_SAMPLE_LOESS_SPANS for the separate samples-only pool).
+                        Default: 0.5,0.75,0.9
+
+  AUTO_HUBER_KS         Comma-separated Huber regression k values (MASS::rlm, psi.huber) auto_combat
+                        evaluates as candidates for QC-based batches. Lower k = more robust to
+                        outlier QC points but less statistically efficient; 1.345 is MASS::rlm's own
+                        default (~95% efficiency under Gaussian errors).
+                        Default: 1.0,1.345,2.0
+
+  AUTO_SAMPLE_LOESS_SPANS  Comma-separated LOESS spans auto_combat evaluates for batches without
+                        enough QC (fit on biological samples, validated against ltQC). Separate
+                        range from AUTO_LOESS_SPANS — see the LOESS_SAMPLE_SPAN discussion above
+                        for why a QC-free fit needs a different span range than a QC-anchored one.
+                        Default: 0.3,0.6,0.9
+
+  AUTO_SAMPLE_HUBER_KS  Comma-separated Huber k values for the samples-only candidate pool.
+                        Default: 1.0,1.345,2.0
+
+  AUTO_MIN_QC_PER_BATCH  Same role as LOESS_MIN_QC_PER_BATCH, for auto_combat: minimum QC samples
+                        a batch needs to use the QC-based (leave-one-out CV) candidate pool instead
+                        of the samples-only (ltQC-validated) one.
+                        Default: 4
+
+  AUTO_MIN_LTQC_VALIDATE  Same role as LOESS_MIN_LTQC_VALIDATE, for auto_combat: minimum ltQC
+                        samples a batch needs to evaluate the samples-only candidate pool at all.
+                        Batches with fewer are left uncorrected.
+                        Default: 3
+
+  AUTO_MIN_CV_OBS       Minimum finite training observations (QC, or samples for the ltQC-validated
+                        pool) a feature needs before auto_combat attempts to fit any candidate for
+                        it. Features below this are left uncorrected for that batch.
+                        Default: 4
 
   CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
                         All other batches are corrected onto this batch.
@@ -353,6 +389,12 @@ RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 #                            QC-free trial on samples kept only if it improves the ltQC/Sample
 #                            D-ratio, else uncorrected — see LOESS_MIN_QC_PER_BATCH,
 #                            LOESS_MIN_LTQC_VALIDATE) + ComBat
+#   "auto_combat"         — per-batch drift correction auto-selected from several LOESS spans,
+#                            several Huber (MASS::rlm) k values, and a flat/no-op baseline, via
+#                            leave-one-out CV on QC or held-out ltQC/Sample D-ratio (see
+#                            AUTO_LOESS_SPANS, AUTO_HUBER_KS, AUTO_MIN_QC_PER_BATCH,
+#                            AUTO_MIN_LTQC_VALIDATE) + ComBat. New/experimental — see whether it
+#                            outperforms the fixed-method loess_* variants before relying on it.
 #   "loess_limma"         — per-batch LOESS drift correction (QC-based) + limma removeBatchEffect
 #   "loess_samples_limma" — same per-batch QC-based/QC-free-trial/uncorrected choice as
 #                            loess_samples_combat + limma removeBatchEffect
@@ -386,6 +428,14 @@ WAVEICA_V1_K      <- as.integer(get_env("WAVEICA_V1_K", "20"))
 WAVEICA_V1_T      <- as.numeric(get_env("WAVEICA_V1_T", "0.05"))
 WAVEICA_V1_T2     <- as.numeric(get_env("WAVEICA_V1_T2", "0.05"))
 WAVEICA_V1_ALPHA  <- as.numeric(get_env("WAVEICA_V1_ALPHA", "0"))
+parse_num_list <- function(s) as.numeric(strsplit(s, ",")[[1]])
+AUTO_LOESS_SPANS        <- parse_num_list(get_env("AUTO_LOESS_SPANS",        "0.5,0.75,0.9"))
+AUTO_HUBER_KS           <- parse_num_list(get_env("AUTO_HUBER_KS",           "1.0,1.345,2.0"))
+AUTO_SAMPLE_LOESS_SPANS <- parse_num_list(get_env("AUTO_SAMPLE_LOESS_SPANS", "0.3,0.6,0.9"))
+AUTO_SAMPLE_HUBER_KS    <- parse_num_list(get_env("AUTO_SAMPLE_HUBER_KS",    "1.0,1.345,2.0"))
+AUTO_MIN_QC_PER_BATCH   <- as.integer(get_env("AUTO_MIN_QC_PER_BATCH",  "4"))
+AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "3"))
+AUTO_MIN_CV_OBS         <- as.integer(get_env("AUTO_MIN_CV_OBS",       "4"))
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
@@ -406,6 +456,10 @@ run_preflight_checks(
   loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
   loess_min_qc_per_batch = LOESS_MIN_QC_PER_BATCH,
   loess_min_ltqc_validate = LOESS_MIN_LTQC_VALIDATE,
+  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS,
+  auto_sample_loess_spans = AUTO_SAMPLE_LOESS_SPANS, auto_sample_huber_ks = AUTO_SAMPLE_HUBER_KS,
+  auto_min_qc_per_batch = AUTO_MIN_QC_PER_BATCH, auto_min_ltqc_validate = AUTO_MIN_LTQC_VALIDATE,
+  auto_min_cv_obs = AUTO_MIN_CV_OBS,
   waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF,
   waveica_k = if (is.null(WAVEICA_K)) NA_integer_ else WAVEICA_K,
   waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
@@ -749,6 +803,10 @@ for (method in CORRECTION_METHODS) {
                                                            LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
                                                            LOESS_MIN_LTQC_VALIDATE,
                                                            LOESS_VALIDATE_SAMPLES_CORRECTION),
+      auto_combat = correct_auto_combat(data, AUTO_LOESS_SPANS, AUTO_HUBER_KS,
+                                         AUTO_SAMPLE_LOESS_SPANS, AUTO_SAMPLE_HUBER_KS,
+                                         AUTO_MIN_QC_PER_BATCH, AUTO_MIN_LTQC_VALIDATE,
+                                         AUTO_MIN_CV_OBS),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
       loess_samples_limma = correct_loess_samples_limma(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
                                                           LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
@@ -764,7 +822,7 @@ for (method in CORRECTION_METHODS) {
       waveica_v1   = correct_waveica_v1(data, wf = WAVEICA_V1_WF, K = WAVEICA_V1_K,
                                          t = WAVEICA_V1_T, t2 = WAVEICA_V1_T2,
                                          alpha = WAVEICA_V1_ALPHA),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica, waveica_v1")
+      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, auto_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica, waveica_v1")
     )
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
