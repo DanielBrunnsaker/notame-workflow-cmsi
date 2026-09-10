@@ -42,6 +42,16 @@ check_numeric_list <- function(problems, name, values, min = NULL, max = NULL) {
   problems
 }
 
+# Appends an error to `problems` if `value` (a raw config/env-var string) is
+# not "auto", "true", or "false" (case-insensitive) -- the three valid states
+# for COMBAT_MEAN_ONLY / COMBAT_PAR_PRIOR (see combat_correct() in
+# R/correction_methods.R).
+check_tri_logical <- function(problems, name, value) {
+  if (!tolower(value) %in% c("auto", "true", "false"))
+    problems <- c(problems, paste0(name, " must be 'auto', 'TRUE', or 'FALSE', got: '", value, "'"))
+  problems
+}
+
 run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sample_sheet,
                                   project_folder, column, polarity,
                                   correction_methods, normalization,
@@ -56,6 +66,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   auto_min_qc_per_batch, auto_min_ltqc_validate, auto_min_cv_obs,
                                   waveica_alpha, waveica_cutoff, waveica_k,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
+                                  combat_mean_only, combat_par_prior,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
                                   save_pre_correction_plots,
                                   config_file = "", raw_sample_type_rules = NULL) {
@@ -159,6 +170,8 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "WAVEICA_V1_T",            waveica_v1_t,     min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_V1_T2",           waveica_v1_t2,    min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_V1_ALPHA",        waveica_v1_alpha, min = 0, max = 1)
+  problems <- check_tri_logical(problems, "COMBAT_MEAN_ONLY", combat_mean_only)
+  problems <- check_tri_logical(problems, "COMBAT_PAR_PRIOR", combat_par_prior)
 
   # Numeric parameters: optional (NA means disabled)
   problems <- check_numeric(problems, "BLANK_RATIO",    blank_ratio,    min = 0,           allow_na = TRUE)

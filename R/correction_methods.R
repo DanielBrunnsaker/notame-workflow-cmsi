@@ -64,6 +64,78 @@ clamp_nonpositive <- function(se, context = "") {
   se
 }
 
+# ComBat wrapper where mean.only/par.prior are each either a fixed logical or
+# the string "auto". When "auto", tries both TRUE and FALSE for that
+# parameter (holding any fixed parameter constant) and keeps whichever
+# combination gives the best ltQC/Sample D-ratio (eval_ltqc_dratio(), see
+# R/qc_metrics.R) on the back-transformed, corrected data. ltQC is never used
+# to fit anything upstream of this step, so it's the unbiased check on
+# whether a given ComBat configuration under- or over-corrects -- same
+# rationale as auto_select_drift_correction()'s pooled D-ratio comparisons.
+# ComBat itself is cheap relative to the drift-correction search already run
+# for auto_combat, so up to 4 extra ComBat fits here costs little.
+#
+# `combined` must already be log2-transformed (assay(combined,1) on log2
+# scale, as at every call site below). Returns the corrected log2-scale
+# matrix -- callers keep doing their own 2^... back-transform afterward.
+combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
+  batch   <- as.factor(colData(combined)$Batch)
+  log_mat <- assay(combined, 1)
+
+  mo_grid <- if (identical(mean_only, "auto")) c(TRUE, FALSE) else as.logical(mean_only)
+  pp_grid <- if (identical(par_prior, "auto")) c(TRUE, FALSE) else as.logical(par_prior)
+
+  if (length(mo_grid) == 1 && length(pp_grid) == 1) {
+    message("  ComBat parameters: mean.only=", mo_grid, ", par.prior=", pp_grid)
+    return(ComBat(dat = log_mat, batch = batch, mean.only = mo_grid, par.prior = pp_grid))
+  }
+
+  grid <- expand.grid(mean_only = mo_grid, par_prior = pp_grid)
+  message("  Auto-selecting ComBat parameters (", nrow(grid),
+          " combination(s), via ltQC/Sample D-ratio)")
+
+  best_dratio <- Inf
+  best_mat    <- NULL
+  best_row    <- NULL
+
+  for (i in seq_len(nrow(grid))) {
+    mo <- grid$mean_only[i]
+    pp <- grid$par_prior[i]
+    corrected <- tryCatch(
+      ComBat(dat = log_mat, batch = batch, mean.only = mo, par.prior = pp),
+      error = function(e) {
+        message("    mean.only=", mo, ", par.prior=", pp, ": ComBat failed (",
+                conditionMessage(e), ")")
+        NULL
+      }
+    )
+    if (is.null(corrected)) next
+
+    se_trial <- combined
+    assay(se_trial, 1, withDimnames = FALSE) <- 2^corrected
+    dratio <- eval_ltqc_dratio(se_trial)
+    message("    mean.only=", mo, ", par.prior=", pp, ": ltQC/Sample D-ratio = ",
+            if (is.na(dratio)) "NA" else round(dratio, 4))
+
+    if (!is.na(dratio) && dratio < best_dratio) {
+      best_dratio <- dratio
+      best_mat    <- corrected
+      best_row    <- grid[i, ]
+    }
+  }
+
+  if (is.null(best_mat)) {
+    message("  No candidate's ltQC/Sample D-ratio could be computed (insufficient ltQC) — ",
+            "defaulting to mean.only=TRUE, par.prior=TRUE")
+    return(ComBat(dat = log_mat, batch = batch, mean.only = TRUE, par.prior = TRUE))
+  }
+
+  message("  Selected ComBat parameters: mean.only=", best_row$mean_only,
+          ", par.prior=", best_row$par_prior,
+          "  (ltQC/Sample D-ratio = ", round(best_dratio, 4), ")")
+  best_mat
+}
+
 correct_none <- function(data) {
   message("==> No correction (imputation only)")
   obs_mask <- !is.na(assay(data, 1))
@@ -101,7 +173,7 @@ correct_notame <- function(data, ruv_k) {
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_loess_combat <- function(data, loess_span) {
+correct_loess_combat <- function(data, loess_span, combat_mean_only = "auto", combat_par_prior = "auto") {
   suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
@@ -128,9 +200,8 @@ correct_loess_combat <- function(data, loess_span) {
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
     message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- ComBat(
-      dat   = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
+    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
+      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
     )
 
     message("==> Back-transforming to raw scale")
@@ -145,7 +216,8 @@ correct_loess_combat <- function(data, loess_span) {
 
 correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_obs,
                                           min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                          validate_samples_correction = TRUE) {
+                                          validate_samples_correction = TRUE,
+                                          combat_mean_only = "auto", combat_par_prior = "auto") {
   suppressPackageStartupMessages(library(sva))
 
   # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
@@ -178,9 +250,8 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
     message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- ComBat(
-      dat   = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
+    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
+      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
     )
 
     message("==> Back-transforming to raw scale")
@@ -202,7 +273,8 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
 # QC-free batches (pooling evidence across batches, not decided per batch) --
 # see auto_select_drift_correction()'s own documentation for why.
 correct_auto_combat <- function(data, loess_spans, huber_ks, sample_loess_spans, sample_huber_ks,
-                                 min_qc_per_batch = 4, min_ltqc_validate = 3, min_cv_obs = 4) {
+                                 min_qc_per_batch = 4, min_ltqc_validate = 3, min_cv_obs = 4,
+                                 combat_mean_only = "auto", combat_par_prior = "auto") {
   suppressPackageStartupMessages(library(sva))
 
   message("==> Drift correction (auto-selected: one method for all QC-based batches, one for ",
@@ -232,9 +304,8 @@ correct_auto_combat <- function(data, loess_spans, huber_ks, sample_loess_spans,
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
     message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- ComBat(
-      dat   = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
+    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
+      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
     )
 
     message("==> Back-transforming to raw scale")
@@ -479,7 +550,7 @@ correct_loess_samples_limma <- function(data, qc_span, sample_span, sample_min_o
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
-correct_combat_only <- function(data) {
+correct_combat_only <- function(data, combat_mean_only = "auto", combat_par_prior = "auto") {
   suppressPackageStartupMessages(library(sva))
 
   obs_mask <- !is.na(assay(data, 1))
@@ -490,9 +561,8 @@ correct_combat_only <- function(data) {
   assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
 
   message("==> Batch correction (ComBat only, no drift correction)")
-  assay(data, 1, withDimnames = FALSE) <- ComBat(
-    dat   = assay(data, 1),
-    batch = as.factor(colData(data)$Batch)
+  assay(data, 1, withDimnames = FALSE) <- combat_correct(
+    data, mean_only = combat_mean_only, par_prior = combat_par_prior
   )
 
   message("==> Back-transforming to raw scale")

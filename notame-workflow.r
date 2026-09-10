@@ -298,6 +298,27 @@ if both are set for the same parameter.
                         same name, unrelated meaning, different package.
                         Default: 0
 
+  COMBAT_MEAN_ONLY      Whether ComBat (combat_only, loess_combat, loess_samples_combat,
+                        auto_combat) adjusts only each feature's per-batch mean (TRUE) or also
+                        forces every batch's variance to match a common value (FALSE, ComBat's own
+                        default). Forcing variance equal across batches is the usual cause of
+                        PCA looking artificially 'flattened' after correction, if batches genuinely
+                        differ in spread (e.g. different biological composition). 'auto' tries both
+                        and keeps whichever gives the better ltQC/Sample D-ratio (see
+                        combat_correct() in R/correction_methods.R) -- set TRUE or FALSE directly
+                        to skip the search and force a specific behaviour.
+                        Values: auto, TRUE, FALSE
+                        Default: auto
+
+  COMBAT_PAR_PRIOR      Whether ComBat estimates its empirical Bayes prior parametrically
+                        (TRUE, assumes a Normal/Inverse-Gamma shape for batch effects -- faster)
+                        or non-parametrically (FALSE, a more flexible density estimate -- slower,
+                        more robust if batch effects are non-Gaussian). 'auto' tries both and keeps
+                        whichever gives the better ltQC/Sample D-ratio, same mechanism as
+                        COMBAT_MEAN_ONLY.
+                        Values: auto, TRUE, FALSE
+                        Default: auto
+
                         Note: waveica_v1 uses real batch labels directly rather than injection
                         order as a proxy for batch structure, which may make it a better fit
                         when batch labels are known and reliable (see waveica_v1 in the
@@ -436,6 +457,8 @@ AUTO_SAMPLE_HUBER_KS    <- parse_num_list(get_env("AUTO_SAMPLE_HUBER_KS",    "1.
 AUTO_MIN_QC_PER_BATCH   <- as.integer(get_env("AUTO_MIN_QC_PER_BATCH",  "4"))
 AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "3"))
 AUTO_MIN_CV_OBS         <- as.integer(get_env("AUTO_MIN_CV_OBS",       "4"))
+COMBAT_MEAN_ONLY <- get_env("COMBAT_MEAN_ONLY", "auto")
+COMBAT_PAR_PRIOR <- get_env("COMBAT_PAR_PRIOR", "auto")
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
 SAVE_PRE_CORRECTION_PLOTS  <- as.logical(get_env("SAVE_PRE_CORRECTION_PLOTS", "TRUE"))
 FORCE_RECONVERT            <- as.logical(get_env("FORCE_RECONVERT", "FALSE"))
@@ -464,6 +487,7 @@ run_preflight_checks(
   waveica_k = if (is.null(WAVEICA_K)) NA_integer_ else WAVEICA_K,
   waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
   waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
+  combat_mean_only = COMBAT_MEAN_ONLY, combat_par_prior = COMBAT_PAR_PRIOR,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
   config_file = config_file, raw_sample_type_rules = config$sample_type_rules
@@ -797,16 +821,18 @@ for (method in CORRECTION_METHODS) {
         correct_serrf(data, num = serrf_num_eff)
       },
       batchcorr    = correct_batchcorr(data),
-      combat_only  = correct_combat_only(data),
-      loess_combat        = correct_loess_combat(data, LOESS_SPAN),
+      combat_only  = correct_combat_only(data, COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
+      loess_combat        = correct_loess_combat(data, LOESS_SPAN, COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
       loess_samples_combat = correct_loess_samples_combat(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
                                                            LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
                                                            LOESS_MIN_LTQC_VALIDATE,
-                                                           LOESS_VALIDATE_SAMPLES_CORRECTION),
+                                                           LOESS_VALIDATE_SAMPLES_CORRECTION,
+                                                           COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
       auto_combat = correct_auto_combat(data, AUTO_LOESS_SPANS, AUTO_HUBER_KS,
                                          AUTO_SAMPLE_LOESS_SPANS, AUTO_SAMPLE_HUBER_KS,
                                          AUTO_MIN_QC_PER_BATCH, AUTO_MIN_LTQC_VALIDATE,
-                                         AUTO_MIN_CV_OBS),
+                                         AUTO_MIN_CV_OBS,
+                                         COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
       loess_limma   = correct_loess_limma(data, LOESS_SPAN),
       loess_samples_limma = correct_loess_samples_limma(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
                                                           LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
