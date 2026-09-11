@@ -265,6 +265,7 @@ correct_loess_combat <- function(data, loess_span, combat_mean_only = "auto", co
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -315,6 +316,7 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -371,6 +373,7 @@ correct_loess_samples_sva <- function(data, qc_span, sample_span, sample_min_obs
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -414,6 +417,7 @@ correct_huber_combat <- function(data, huber_k, combat_mean_only = "auto", comba
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -469,6 +473,7 @@ correct_huber_samples_combat <- function(data, qc_k, sample_k, sample_min_obs,
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -524,6 +529,7 @@ correct_huber_samples_sva <- function(data, qc_k, sample_k, sample_min_obs,
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -576,6 +582,7 @@ correct_auto_combat <- function(data, loess_spans, huber_ks, sample_loess_spans,
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -757,6 +764,7 @@ correct_loess_limma <- function(data, loess_span) {
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -807,6 +815,7 @@ correct_loess_samples_limma <- function(data, qc_span, sample_span, sample_min_o
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else {
+    combined <- clamp_nonpositive(combined, "before log2")
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
 
@@ -833,6 +842,7 @@ correct_combat_only <- function(data, combat_mean_only = "auto", combat_par_prio
   data     <- lod2_impute(data)
   pre      <- data
 
+  data <- clamp_nonpositive(data, "before log2")
   message("==> Log2 transformation")
   assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
 
@@ -1271,6 +1281,7 @@ run_cordbat <- function(combined, ref_batch) {
 
   if (is.null(ref_batch)) ref_batch <- select_ref_batch_cordbat(combined)
 
+  combined <- clamp_nonpositive(combined, "before log2")
   message("==> Log2 transformation")
   mat_log <- log2(assay(combined, 1))
 
