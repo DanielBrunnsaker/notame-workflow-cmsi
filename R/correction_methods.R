@@ -146,12 +146,24 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
 # capture, at the cost of being less interpretable than ComBat's simple
 # per-batch shift.
 #
-# mod == mod0 == ~Batch deliberately: this pipeline has no biological-group
-# column to protect as a "variable of interest" (same limitation noted for
-# correct_waveica_v1()'s `group` argument), and setting mod = mod0 to the
-# known-adjustment-variable model (Batch) is sva()'s own documented usage for
-# estimating purely latent surrogate variables beyond a set of already-known
-# covariates, per its vignette.
+# mod == mod0 == ~1 (intercept only) for the estimation step -- NOT ~Batch.
+# An earlier version of this function used mod = mod0 = model.matrix(~Batch),
+# on the theory that this would make the estimated surrogate variables
+# represent only structure *beyond* Batch. In practice that's a degenerate
+# input to sva(): mod and mod0 identical but non-trivial makes every
+# per-feature F-test sva() runs internally compare a model against itself
+# (0 residual degrees of freedom for the "variable of interest" term),
+# producing NaN p-values for every feature -- which is what was actually
+# causing the "'x' contains missing values" failure during sva()'s iterative
+# reweighting (not, as first suspected, non-finite values in the data
+# matrix itself; see clamp_nonpositive() calls elsewhere in this file, which
+# fixed a real but different latent-NaN risk and should stay). mod = mod0 = ~1
+# is sva()'s own documented recipe for "no known variable of interest, no
+# known covariates to protect during estimation" -- it may end up
+# re-discovering batch-like structure as one of its own surrogate variables,
+# which is fine: known Batch is still regressed out explicitly and
+# separately at the removeBatchEffect() step below regardless of what sva()
+# found, so nothing depends on mod excluding it.
 #
 # n_sv = NULL auto-estimates the surrogate variable count via
 # sva::num.sv(..., method = "be") (Buja-Eyuboglu permutation test, the
@@ -166,7 +178,7 @@ sva_correct <- function(combined, n_sv = NULL) {
 
   log_mat <- assay(combined, 1)
   batch   <- as.factor(colData(combined)$Batch)
-  mod     <- model.matrix(~batch)
+  mod     <- model.matrix(~1, data = as.data.frame(colData(combined)))
   mod0    <- mod
 
   n_sv_eff <- n_sv
