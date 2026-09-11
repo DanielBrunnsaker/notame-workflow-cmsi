@@ -10,7 +10,7 @@
 VALID_CORRECTION_METHODS <- c(
   "none", "notame", "pmp_qcrsc", "pmp_qcrsc_scale", "pmp_qcrsc_feature_scale",
   "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat", "auto_combat",
-  "huber_combat", "huber_samples_combat",
+  "huber_combat", "huber_samples_combat", "loess_samples_sva", "huber_samples_sva",
   "loess_limma", "loess_samples_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
   "loess_cordbat", "waveica", "waveica_v1"
 )
@@ -65,7 +65,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   auto_loess_spans, auto_huber_ks,
                                   auto_sample_loess_spans, auto_sample_huber_ks,
                                   auto_min_qc_per_batch, auto_min_ltqc_validate, auto_min_cv_obs,
-                                  huber_k, huber_sample_k,
+                                  huber_k, huber_sample_k, sva_n_sv,
                                   waveica_alpha, waveica_cutoff, waveica_k,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
                                   combat_mean_only, combat_par_prior,
@@ -167,6 +167,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "AUTO_MIN_CV_OBS",        auto_min_cv_obs,        min = 4)
   problems <- check_numeric(problems, "HUBER_K",        huber_k,        min = 0)
   problems <- check_numeric(problems, "HUBER_SAMPLE_K", huber_sample_k, min = 0)
+  problems <- check_numeric(problems, "SVA_N_SV", sva_n_sv, min = 0, allow_na = TRUE)
   problems <- check_numeric(problems, "WAVEICA_ALPHA",           waveica_alpha,  min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_CUTOFF",          waveica_cutoff, min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_K",               waveica_k,      min = 1, allow_na = TRUE)

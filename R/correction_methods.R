@@ -136,6 +136,75 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
   best_mat
 }
 
+# SVA (Surrogate Variable Analysis, `sva` package -- already a dependency via
+# ComBat) as an alternative between-batch correction. Unlike ComBat, it isn't
+# limited to a per-batch mean/variance shift model: it estimates n_sv latent
+# "surrogate variables" representing systematic (non-random) structure in the
+# data not already explained by known Batch, then regresses out Batch AND
+# those surrogate variables together via limma::removeBatchEffect() -- so it
+# can pick up additional technical structure Batch alone doesn't fully
+# capture, at the cost of being less interpretable than ComBat's simple
+# per-batch shift.
+#
+# mod == mod0 == ~Batch deliberately: this pipeline has no biological-group
+# column to protect as a "variable of interest" (same limitation noted for
+# correct_waveica_v1()'s `group` argument), and setting mod = mod0 to the
+# known-adjustment-variable model (Batch) is sva()'s own documented usage for
+# estimating purely latent surrogate variables beyond a set of already-known
+# covariates, per its vignette.
+#
+# n_sv = NULL auto-estimates the surrogate variable count via
+# sva::num.sv(..., method = "be") (Buja-Eyuboglu permutation test, the
+# package's own recommended default); pass an integer to fix it instead --
+# same NULL-means-auto convention as WAVEICA_K.
+#
+# `combined` must already be log2-transformed, as at every ComBat call site
+# above. Returns the corrected log2-scale matrix.
+sva_correct <- function(combined, n_sv = NULL) {
+  suppressPackageStartupMessages(library(sva))
+  suppressPackageStartupMessages(library(limma))
+
+  log_mat <- assay(combined, 1)
+  batch   <- as.factor(colData(combined)$Batch)
+  mod     <- model.matrix(~batch)
+  mod0    <- mod
+
+  n_sv_eff <- n_sv
+  if (is.null(n_sv_eff)) {
+    n_sv_eff <- tryCatch(
+      suppressWarnings(num.sv(log_mat, mod, method = "be")),
+      error = function(e) {
+        message("  num.sv() failed to estimate surrogate variable count (", conditionMessage(e),
+                ") — defaulting to 0 (Batch-only correction)")
+        0L
+      }
+    )
+    message("  Auto-estimated surrogate variable count: ", n_sv_eff)
+  } else {
+    message("  Using fixed surrogate variable count: ", n_sv_eff)
+  }
+
+  if (n_sv_eff <= 0) {
+    message("  No surrogate variables to estimate — correcting for known Batch only")
+    return(removeBatchEffect(log_mat, batch = batch))
+  }
+
+  svobj <- tryCatch(
+    suppressWarnings(sva(log_mat, mod, mod0, n.sv = n_sv_eff)),
+    error = function(e) {
+      message("  sva() failed (", conditionMessage(e), ") — correcting for known Batch only")
+      NULL
+    }
+  )
+
+  if (is.null(svobj) || is.null(svobj$sv) || NCOL(svobj$sv) == 0) {
+    return(removeBatchEffect(log_mat, batch = batch))
+  }
+
+  message("  Estimated ", NCOL(svobj$sv), " surrogate variable(s) — regressing out Batch + surrogate variables")
+  removeBatchEffect(log_mat, batch = batch, covariates = svobj$sv)
+}
+
 correct_none <- function(data) {
   message("==> No correction (imputation only)")
   obs_mask <- !is.na(assay(data, 1))
@@ -264,6 +333,60 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# SVA-equivalent of correct_loess_samples_combat(): same three-tier per-batch
+# LOESS drift correction (QC-based if enough QC; else a QC-free trial on
+# samples validated against ltQC D-ratio; else uncorrected), but SVA
+# (sva_correct(), regressing out Batch + latent surrogate variables via
+# limma::removeBatchEffect()) instead of ComBat for the between-batch step.
+correct_loess_samples_sva <- function(data, qc_span, sample_span, sample_min_obs,
+                                       min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                       validate_samples_correction = TRUE,
+                                       sva_n_sv = NULL) {
+  suppressPackageStartupMessages(library(sva))
+  suppressPackageStartupMessages(library(limma))
+
+  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
+  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
+          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
+          else " applied unconditionally -- validation disabled)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
+                                  sample_min_obs = sample_min_obs,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  validate = validate_samples_correction)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before SVA/removeBatchEffect which require a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (SVA)")
+    assay(combined, 1, withDimnames = FALSE) <- sva_correct(combined, n_sv = sva_n_sv)
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 # Huber-equivalent of correct_loess_combat(): QC-based Huber robust regression
 # drift correction at a fixed k (not auto-searched -- see huber_samples_combat
 # for the hybrid QC/samples version, or auto_combat if you want k chosen for
@@ -353,6 +476,59 @@ correct_huber_samples_combat <- function(data, qc_k, sample_k, sample_min_obs,
     assay(combined, 1, withDimnames = FALSE) <- combat_correct(
       combined, mean_only = combat_mean_only, par_prior = combat_par_prior
     )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+# SVA-equivalent of correct_huber_samples_combat(): same three-tier per-batch
+# Huber drift correction (fixed qc_k/sample_k, not auto-searched), but SVA
+# instead of ComBat for the between-batch step -- see correct_loess_samples_sva()
+# and sva_correct() for the SVA design rationale, which applies unchanged here.
+correct_huber_samples_sva <- function(data, qc_k, sample_k, sample_min_obs,
+                                       min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                       validate_samples_correction = TRUE,
+                                       sva_n_sv = NULL) {
+  suppressPackageStartupMessages(library(sva))
+  suppressPackageStartupMessages(library(limma))
+
+  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
+  message("==> Drift correction (per-batch: QC-based Huber if enough QC, else QC-free Huber on samples",
+          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
+          else " applied unconditionally -- validation disabled)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      huber_correct_batch_hybrid(se_b, qc_k = qc_k, sample_k = sample_k,
+                                  sample_min_obs = sample_min_obs,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  validate = validate_samples_correction)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before SVA/removeBatchEffect which require a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (SVA)")
+    assay(combined, 1, withDimnames = FALSE) <- sva_correct(combined, n_sv = sva_n_sv)
 
     message("==> Back-transforming to raw scale")
     assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
