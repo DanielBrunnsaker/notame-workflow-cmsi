@@ -7,6 +7,9 @@
 # loess_correct_batch_samples()  — QC-free LOESS drift correction (fit on biological samples)
 # loess_correct_batch_hybrid()   — per-batch: QC-based if enough QC, else samples-based
 #                                   trial validated against ltQC (kept only if it helps), else uncorrected
+# huber_correct_batch()          — QC-based Huber robust regression drift correction (fixed k)
+# huber_correct_batch_samples()  — QC-free Huber drift correction, fit on biological samples
+# huber_correct_batch_hybrid()   — per-batch Huber equivalent of loess_correct_batch_hybrid()
 # auto_select_drift_correction() — picks ONE drift-correction method for all QC-based batches and
 #                                   ONE for all QC-free batches (never a different method per batch),
 #                                   from several fitting candidates (LOESS at several spans, Huber
@@ -252,6 +255,175 @@ loess_correct_batch_samples <- function(se_b, span = 0.9, min_obs = 10) {
 
   assay(se_b, 1, withDimnames = FALSE) <- mat
   se_b
+}
+
+
+# Huber robust regression within-batch drift correction (QC-based).
+# Structurally identical to loess_correct_batch() -- same per-feature QC fit,
+# same ratio-to-QC-median correction -- but fits a single robust linear trend
+# (MASS::rlm, psi.huber, tuning constant k) instead of a local LOESS curve.
+# Rigid where LOESS is flexible: cannot track curved drift, but is far less
+# prone to fitting noise as signal at small QC counts, and is the more
+# defensible choice when QC counts are on the low side for a stable LOESS fit.
+# Uses fit_predict_huber() (this file) for the actual fit -- same log2-space
+# rationale documented there.
+huber_correct_batch <- function(se_b, k = 1.345) {
+  mat    <- assay(se_b, 1)
+  cd     <- colData(se_b)
+  qc_idx <- which(cd$QC == "QC")
+  inj    <- as.numeric(cd$Injection_order)
+  batch  <- unique(cd$Batch)
+  n_feat <- nrow(mat)
+
+  message("  Batch ", batch, ": ", length(qc_idx), " QC sample(s), ", n_feat, " features")
+
+  if (any(!is.finite(inj))) {
+    bad <- which(!is.finite(inj))
+    stop("Non-finite Injection_order in batch ", batch,
+         ": samples ", paste(cd$Sample_ID[bad], collapse = ", "),
+         " (values: ", paste(inj[bad], collapse = ", "), ")")
+  }
+
+  n_skipped_qc  <- 0L
+  n_skipped_err <- 0L
+
+  for (i in seq_len(nrow(mat))) {
+    y_qc <- as.numeric(mat[i, qc_idx])
+    x_qc <- inj[qc_idx]
+    ok   <- is.finite(y_qc) & y_qc > 0
+
+    if (sum(ok) < 4) { n_skipped_qc <- n_skipped_qc + 1L; next }
+
+    tryCatch({
+      ok_inj       <- !is.na(inj)
+      pred         <- rep(NA_real_, length(inj))
+      pred[ok_inj] <- fit_predict_huber(x_qc[ok], y_qc[ok], inj[ok_inj], k = k)
+      med_qc       <- median(y_qc[ok])
+      ratio        <- pred / med_qc
+      ratio[is.na(ratio) | ratio <= 0] <- 1
+      mat[i, ]     <- mat[i, ] / ratio
+    }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
+  }
+
+  n_qc_corrected <- n_feat - n_skipped_qc - n_skipped_err
+  message("  Batch ", batch, ": drift-corrected ", n_qc_corrected, "/", n_feat, " features",
+          if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (insufficient QC observations)") else "",
+          if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (Huber fit error)") else "")
+
+  assay(se_b, 1, withDimnames = FALSE) <- mat
+  se_b
+}
+
+
+# Huber robust regression within-batch drift correction (QC-free, fit on
+# biological samples). Structurally identical to loess_correct_batch_samples()
+# -- same reasoning about samples being noisier than QC and the higher default
+# min_obs -- but fits MASS::rlm instead of a robust-family LOESS. Huber's own
+# psi.huber downweighting already guards against single-sample outliers, the
+# same role LOESS's family = "symmetric" plays there.
+huber_correct_batch_samples <- function(se_b, k = 1.345, min_obs = 10) {
+  mat      <- assay(se_b, 1)
+  cd       <- colData(se_b)
+  samp_idx <- which(cd$QC == "Sample")
+  inj      <- as.numeric(cd$Injection_order)
+  batch    <- unique(cd$Batch)
+  n_feat   <- nrow(mat)
+
+  message("  Batch ", batch, ": ", length(samp_idx), " sample(s), ", n_feat, " features")
+
+  if (any(!is.finite(inj))) {
+    bad <- which(!is.finite(inj))
+    stop("Non-finite Injection_order in batch ", batch,
+         ": samples ", paste(cd$Sample_ID[bad], collapse = ", "),
+         " (values: ", paste(inj[bad], collapse = ", "), ")")
+  }
+
+  n_skipped_n   <- 0L
+  n_skipped_err <- 0L
+
+  for (i in seq_len(nrow(mat))) {
+    y_s <- as.numeric(mat[i, samp_idx])
+    x_s <- inj[samp_idx]
+    ok  <- is.finite(y_s) & y_s > 0
+
+    if (sum(ok) < min_obs) { n_skipped_n <- n_skipped_n + 1L; next }
+
+    tryCatch({
+      ok_inj       <- !is.na(inj)
+      pred         <- rep(NA_real_, length(inj))
+      pred[ok_inj] <- fit_predict_huber(x_s[ok], y_s[ok], inj[ok_inj], k = k)
+      med_s        <- median(y_s[ok])
+      ratio        <- pred / med_s
+      ratio[is.na(ratio) | ratio <= 0] <- 1
+      mat[i, ]     <- mat[i, ] / ratio
+    }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
+  }
+
+  n_corrected <- n_feat - n_skipped_n - n_skipped_err
+  message("  Batch ", batch, ": drift-corrected ", n_corrected, "/", n_feat, " features",
+          if (n_skipped_n   > 0) paste0(" | ", n_skipped_n,   " skipped (insufficient sample observations)") else "",
+          if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (Huber fit error)") else "")
+
+  assay(se_b, 1, withDimnames = FALSE) <- mat
+  se_b
+}
+
+
+# Per-batch hybrid Huber drift correction -- identical decision logic to
+# loess_correct_batch_hybrid() (QC-based if enough QC; else a samples-based
+# trial validated against ltQC D-ratio; else uncorrected), substituting the
+# Huber pair above for the LOESS pair. See loess_correct_batch_hybrid()'s
+# documentation for the full rationale, which applies unchanged here.
+huber_correct_batch_hybrid <- function(se_b, qc_k, sample_k, sample_min_obs,
+                                        min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                        validate = TRUE) {
+  cd    <- colData(se_b)
+  n_qc  <- sum(cd$QC == "QC")
+  batch <- unique(cd$Batch)
+
+  if (n_qc >= min_qc_per_batch) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (>= ", min_qc_per_batch,
+            ") — using QC-based Huber")
+    return(huber_correct_batch(se_b, k = qc_k))
+  }
+
+  if (!validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") — applying QC-free Huber on samples unconditionally (validation disabled)")
+    return(huber_correct_batch_samples(se_b, k = sample_k, min_obs = sample_min_obs))
+  }
+
+  n_ltqc <- sum(cd$QC == "ltQC")
+  if (n_ltqc < min_ltqc_validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") and only ", n_ltqc, " ltQC sample(s) (< ", min_ltqc_validate,
+            ") to validate a QC-free fit — leaving batch uncorrected")
+    return(se_b)
+  }
+
+  message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+          ") — trialing QC-free Huber on samples, to be validated against ",
+          n_ltqc, " ltQC sample(s)")
+  se_trial <- huber_correct_batch_samples(se_b, k = sample_k, min_obs = sample_min_obs)
+
+  dratio_before <- eval_ltqc_dratio(se_b)
+  dratio_after  <- eval_ltqc_dratio(se_trial)
+
+  if (is.na(dratio_before) || is.na(dratio_after)) {
+    message("  Batch ", batch, ": could not compute ltQC/Sample D-ratio before/after (NA) — ",
+            "leaving batch uncorrected")
+    return(se_b)
+  }
+
+  if (dratio_after < dratio_before) {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio improved with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — keeping correction")
+    se_trial
+  } else {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio did not improve with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — reverting to uncorrected")
+    se_b
+  }
 }
 
 

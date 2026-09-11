@@ -264,6 +264,106 @@ correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_
   list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
+# Huber-equivalent of correct_loess_combat(): QC-based Huber robust regression
+# drift correction at a fixed k (not auto-searched -- see huber_samples_combat
+# for the hybrid QC/samples version, or auto_combat if you want k chosen for
+# you via CV) followed by ComBat batch correction.
+correct_huber_combat <- function(data, huber_k, combat_mean_only = "auto", combat_par_prior = "auto") {
+  suppressPackageStartupMessages(library(sva))
+
+  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
+  message("==> Drift correction (Huber robust regression, k=", huber_k, ")")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      huber_correct_batch(se_b, k = huber_k)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before ComBat which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (ComBat)")
+    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
+      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
+# Huber-equivalent of correct_loess_samples_combat(): same three-tier per-batch
+# choice (QC-based if enough QC; else a QC-free trial on samples validated
+# against ltQC D-ratio; else uncorrected -- see huber_correct_batch_hybrid()),
+# using fixed k values for the QC and samples fits (not auto-searched) instead
+# of LOESS spans, followed by ComBat batch correction.
+correct_huber_samples_combat <- function(data, qc_k, sample_k, sample_min_obs,
+                                          min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                          validate_samples_correction = TRUE,
+                                          combat_mean_only = "auto", combat_par_prior = "auto") {
+  suppressPackageStartupMessages(library(sva))
+
+  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
+  message("==> Drift correction (per-batch: QC-based Huber if enough QC, else QC-free Huber on samples",
+          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
+          else " applied unconditionally -- validation disabled)")
+  combined <- merge_notame_sets(
+    lapply(split_by_batch(data), function(se_b) {
+      huber_correct_batch_hybrid(se_b, qc_k = qc_k, sample_k = sample_k,
+                                  sample_min_obs = sample_min_obs,
+                                  min_qc_per_batch = min_qc_per_batch,
+                                  min_ltqc_validate = min_ltqc_validate,
+                                  validate = validate_samples_correction)
+    }),
+    merge = "samples"
+  )
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask <- !is.na(assay(combined, 1))
+
+  # LoD/2 fill before ComBat which requires a complete matrix
+  combined <- lod2_impute(combined)
+  pre      <- combined
+
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else {
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+
+    message("==> Between-batch correction (ComBat)")
+    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
+      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
+    )
+
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 # Auto-selected drift correction (see auto_select_drift_correction() in
 # R/drift_correction.R) + ComBat between-batch correction. A new, separate
 # method rather than a change to loess_combat/loess_samples_combat -- the
