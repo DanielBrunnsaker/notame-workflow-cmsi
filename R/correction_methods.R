@@ -79,6 +79,7 @@ clamp_nonpositive <- function(se, context = "") {
 # scale, as at every call site below). Returns the corrected log2-scale
 # matrix -- callers keep doing their own 2^... back-transform afterward.
 combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
+  suppressPackageStartupMessages(library(sva))
   batch   <- as.factor(colData(combined)$Batch)
   log_mat <- assay(combined, 1)
 
@@ -217,456 +218,142 @@ sva_correct <- function(combined, n_sv = NULL) {
   removeBatchEffect(log_mat, batch = batch, covariates = svobj$sv)
 }
 
+# `combined` must already be log2-transformed; returns the corrected log2-scale
+# matrix. Extracted from the inline removeBatchEffect() call the old
+# correct_loess_limma()/correct_loess_samples_limma() used, for symmetry with
+# combat_correct()/sva_correct() so limma fits the same "log2"-kind batch-method
+# contract in BATCH_METHOD_REGISTRY below.
+limma_correct <- function(combined) {
+  suppressPackageStartupMessages(library(limma))
+  removeBatchEffect(x = assay(combined, 1), batch = as.factor(colData(combined)$Batch))
+}
+
+# Registry of batch-correction methods (see R/method_spec.R for the full
+# vocabulary). Each entry's `kind` tells run_correction() how to treat it:
+#   "none"     -- no between-batch step at all.
+#   "log2"     -- clamp -> log2 -> fn(combined, params) -> 2^ back-transform.
+#                 fn must return a corrected log2-scale matrix. Requires a
+#                 complete (LoD/2-imputed) input matrix, which run_correction()
+#                 provides. Used by combat/sva/limma.
+#   "complete" -- fn(combined, params) receives an already LoD/2-imputed SE and
+#                 returns a corrected SE; fn manages its own scale handling
+#                 internally (run_cordbat() already does its own clamp/log2/2^
+#                 back-transform; ruvs_qc() works directly on raw scale).
+#   "sparse"   -- fn(combined, params) receives the merged, NOT LoD/2-imputed,
+#                 SE directly and returns a corrected SE; fn does its own
+#                 NA-tolerant filtering. feature_median/global_median were
+#                 built and validated this way -- imputing before them would
+#                 let filled-in placeholder values influence the per-batch/
+#                 per-feature median, which is not how they were designed.
+#   "atomic"   -- fn(data, params) receives the ORIGINAL, unmodified input and
+#                 returns the full list(pre=, post=, obs_mask=) itself; drift
+#                 correction and LoD/2 imputation are skipped entirely by
+#                 run_correction() for these -- the method does its own
+#                 complete pipeline (own imputation, own obs_mask, own final
+#                 RF-impute). Preflight (R/method_spec.R's
+#                 ATOMIC_BATCH_METHODS) forces drift_method="none" whenever
+#                 one of these is selected, since running a separate drift
+#                 step first would either be wasted work or actively wrong.
+BATCH_METHOD_REGISTRY <- list(
+  none = list(kind = "none"),
+  combat = list(kind = "log2", fn = function(se, p)
+    combat_correct(se, mean_only = p$combat_mean_only, par_prior = p$combat_par_prior)),
+  sva = list(kind = "log2", fn = function(se, p)
+    sva_correct(se, n_sv = p$sva_n_sv)),
+  limma = list(kind = "log2", fn = function(se, p) limma_correct(se)),
+  feature_median = list(kind = "sparse", fn = function(se, p) batch_feature_median_correct(se)),
+  global_median  = list(kind = "sparse", fn = function(se, p) batch_global_median_correct(se)),
+  ruv_s = list(kind = "complete", fn = function(se, p)
+    ruvs_qc(se, replicates = list(which(colData(se)$QC == "QC")), k = p$ruv_k)),
+  cordbat = list(kind = "complete", fn = function(se, p) run_cordbat(se, p$cordbat_ref_batch)),
+  batchcorr  = list(kind = "atomic", fn = function(data, p) correct_batchcorr(data)),
+  waveica    = list(kind = "atomic", fn = function(data, p)
+    correct_waveica(data, alpha = p$waveica_alpha, cutoff = p$waveica_cutoff,
+                     K = p$waveica_k, wf = p$waveica_wf, eval_group = p$waveica_eval_group)),
+  waveica_v1 = list(kind = "atomic", fn = function(data, p)
+    correct_waveica_v1(data, wf = p$waveica_v1_wf, K = p$waveica_v1_k, t = p$waveica_v1_t,
+                        t2 = p$waveica_v1_t2, alpha = p$waveica_v1_alpha)),
+  pmp_qcrsc = list(kind = "atomic", fn = function(data, p) correct_pmp_qcrsc(data)),
+  serrf     = list(kind = "atomic", fn = function(data, p) correct_serrf(data, num = p$serrf_num_eff))
+)
+
+# Generic correction-method runner: dispatches the drift step via
+# resolve_drift_fn()/auto_select_drift_correction() (R/drift_correction.R) and
+# the between-batch step via BATCH_METHOD_REGISTRY above, replacing what used
+# to be one bespoke correct_*() wrapper function per named drift+batch
+# combination. `params` is the single shared list of resolved config values
+# built once in notame-workflow.r.
+run_correction <- function(data, drift_method = "none", basis = "none",
+                            batch_method = "none", params = list()) {
+  entry <- BATCH_METHOD_REGISTRY[[batch_method]]
+  if (is.null(entry)) stop("Unknown batch_method: ", batch_method)
+
+  if (entry$kind == "atomic") return(entry$fn(data, params))
+
+  # --- 1. Drift step ---
+  if (drift_method == "none") {
+    combined <- data
+  } else if (drift_method == "auto") {
+    combined <- merge_notame_sets(
+      auto_select_drift_correction(data, basis = basis,
+        loess_spans = params$auto_loess_spans, huber_ks = params$auto_huber_ks,
+        sample_loess_spans = params$auto_sample_loess_spans,
+        sample_huber_ks = params$auto_sample_huber_ks,
+        min_qc_per_batch = params$auto_min_qc_per_batch,
+        min_ltqc_validate = params$auto_min_ltqc_validate,
+        min_cv_obs = params$auto_min_cv_obs),
+      merge = "samples"
+    )
+  } else {
+    drift_fn <- resolve_drift_fn(drift_method, basis)
+    combined <- merge_notame_sets(
+      lapply(split_by_batch(data), function(se_b) drift_fn(se_b, params)),
+      merge = "samples"
+    )
+  }
+
+  # Capture obs_mask after merge so column order matches combined
+  obs_mask  <- !is.na(assay(combined, 1))
+  n_batches <- length(unique(colData(combined)$Batch))
+
+  if (entry$kind == "none") {
+    message("==> Imputation (RF on corrected data)")
+    combined <- rf_impute_corrected(combined, obs_mask)
+    return(list(pre = combined, post = combined, obs_mask = obs_mask))
+  }
+
+  # LoD/2 fill before a batch method that requires a complete matrix
+  # ("log2"/"complete" kinds); "sparse" kinds handle their own NA filtering
+  # and must NOT be pre-imputed (see BATCH_METHOD_REGISTRY's documentation).
+  if (entry$kind %in% c("log2", "complete")) combined <- lod2_impute(combined)
+  pre <- combined
+
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+  } else if (entry$kind == "log2") {
+    combined <- clamp_nonpositive(combined, "before log2")
+    message("==> Log2 transformation")
+    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
+    message("==> Between-batch correction (", batch_method, ")")
+    assay(combined, 1, withDimnames = FALSE) <- entry$fn(combined, params)
+    message("==> Back-transforming to raw scale")
+    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
+  } else {
+    message("==> Between-batch correction (", batch_method, ")")
+    combined <- entry$fn(combined, params)
+  }
+
+  message("==> Imputation (RF on corrected data)")
+  combined <- rf_impute_corrected(combined, obs_mask)
+
+  list(pre = pre, post = combined, obs_mask = obs_mask)
+}
+
 correct_none <- function(data) {
   message("==> No correction (imputation only)")
   obs_mask <- !is.na(assay(data, 1))
   combined <- impute_rf(data, parallelize = "variables")
   list(pre = combined, post = combined, obs_mask = obs_mask)
-}
-
-correct_notame <- function(data, ruv_k) {
-  # Cubic spline handles NAs natively — no LoD/2 before this step
-  message("==> Drift correction (notame cubic spline)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), process_batch),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before RUV which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    message("==> Batch correction (RUV, k=", ruv_k, ")")
-    qc_idx   <- which(colData(combined)$QC == "QC")
-    combined <- ruvs_qc(combined, replicates = list(qc_idx), k = ruv_k)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_combat <- function(data, loess_span, combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (LOESS)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
-      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_samples_combat <- function(data, qc_span, sample_span, sample_min_obs,
-                                          min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                          validate_samples_correction = TRUE,
-                                          combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
-          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
-          else " applied unconditionally -- validation disabled)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
-                                  sample_min_obs = sample_min_obs,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  validate = validate_samples_correction)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
-      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# SVA-equivalent of correct_loess_samples_combat(): same three-tier per-batch
-# LOESS drift correction (QC-based if enough QC; else a QC-free trial on
-# samples validated against ltQC D-ratio; else uncorrected), but SVA
-# (sva_correct(), regressing out Batch + latent surrogate variables via
-# limma::removeBatchEffect()) instead of ComBat for the between-batch step.
-correct_loess_samples_sva <- function(data, qc_span, sample_span, sample_min_obs,
-                                       min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                       validate_samples_correction = TRUE,
-                                       sva_n_sv = NULL) {
-  suppressPackageStartupMessages(library(sva))
-  suppressPackageStartupMessages(library(limma))
-
-  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
-          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
-          else " applied unconditionally -- validation disabled)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
-                                  sample_min_obs = sample_min_obs,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  validate = validate_samples_correction)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before SVA/removeBatchEffect which require a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (SVA)")
-    assay(combined, 1, withDimnames = FALSE) <- sva_correct(combined, n_sv = sva_n_sv)
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# Huber-equivalent of correct_loess_combat(): QC-based Huber robust regression
-# drift correction at a fixed k (not auto-searched -- see huber_samples_combat
-# for the hybrid QC/samples version, or auto_combat if you want k chosen for
-# you via CV) followed by ComBat batch correction.
-correct_huber_combat <- function(data, huber_k, combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (Huber robust regression, k=", huber_k, ")")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      huber_correct_batch(se_b, k = huber_k)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
-      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# Huber-equivalent of correct_loess_samples_combat(): same three-tier per-batch
-# choice (QC-based if enough QC; else a QC-free trial on samples validated
-# against ltQC D-ratio; else uncorrected -- see huber_correct_batch_hybrid()),
-# using fixed k values for the QC and samples fits (not auto-searched) instead
-# of LOESS spans, followed by ComBat batch correction.
-correct_huber_samples_combat <- function(data, qc_k, sample_k, sample_min_obs,
-                                          min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                          validate_samples_correction = TRUE,
-                                          combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based Huber if enough QC, else QC-free Huber on samples",
-          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
-          else " applied unconditionally -- validation disabled)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      huber_correct_batch_hybrid(se_b, qc_k = qc_k, sample_k = sample_k,
-                                  sample_min_obs = sample_min_obs,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  validate = validate_samples_correction)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
-      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# SVA-equivalent of correct_huber_samples_combat(): same three-tier per-batch
-# Huber drift correction (fixed qc_k/sample_k, not auto-searched), but SVA
-# instead of ComBat for the between-batch step -- see correct_loess_samples_sva()
-# and sva_correct() for the SVA design rationale, which applies unchanged here.
-correct_huber_samples_sva <- function(data, qc_k, sample_k, sample_min_obs,
-                                       min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                       validate_samples_correction = TRUE,
-                                       sva_n_sv = NULL) {
-  suppressPackageStartupMessages(library(sva))
-  suppressPackageStartupMessages(library(limma))
-
-  # Huber handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based Huber if enough QC, else QC-free Huber on samples",
-          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
-          else " applied unconditionally -- validation disabled)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      huber_correct_batch_hybrid(se_b, qc_k = qc_k, sample_k = sample_k,
-                                  sample_min_obs = sample_min_obs,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  validate = validate_samples_correction)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before SVA/removeBatchEffect which require a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (SVA)")
-    assay(combined, 1, withDimnames = FALSE) <- sva_correct(combined, n_sv = sva_n_sv)
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# Auto-selected drift correction (see auto_select_drift_correction() in
-# R/drift_correction.R) + ComBat between-batch correction. A new, separate
-# method rather than a change to loess_combat/loess_samples_combat -- the
-# intent is to validate this against the fixed-method ones before it
-# potentially replaces them, not to silently change what an existing named
-# method does. One method is chosen for all QC-based batches and one for all
-# QC-free batches (pooling evidence across batches, not decided per batch) --
-# see auto_select_drift_correction()'s own documentation for why.
-correct_auto_combat <- function(data, loess_spans, huber_ks, sample_loess_spans, sample_huber_ks,
-                                 min_qc_per_batch = 4, min_ltqc_validate = 3, min_cv_obs = 4,
-                                 combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  message("==> Drift correction (auto-selected: one method for all QC-based batches, one for ",
-          "all QC-free batches, via pooled CV on QC / held-out ltQC-Sample D-ratio)")
-  combined <- merge_notame_sets(
-    auto_select_drift_correction(data, loess_spans = loess_spans, huber_ks = huber_ks,
-                                  sample_loess_spans = sample_loess_spans,
-                                  sample_huber_ks = sample_huber_ks,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  min_cv_obs = min_cv_obs),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before ComBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (ComBat)")
-    assay(combined, 1, withDimnames = FALSE) <- combat_correct(
-      combined, mean_only = combat_mean_only, par_prior = combat_par_prior
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_feature_median <- function(data, loess_span) {
-
-  # LOESS handles NAs natively — no LoD/2 needed before this step
-  message("==> Drift correction (LOESS)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
-    }),
-    merge = "samples"
-  )
-
-  obs_mask <- !is.na(assay(combined, 1))
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    message("==> Between-batch correction (per-feature median ratio normalisation)")
-    combined <- batch_feature_median_correct(combined)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_global_median <- function(data, loess_span) {
-
-  # LOESS handles NAs natively — no LoD/2 needed before this step
-  message("==> Drift correction (LOESS)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
-    }),
-    merge = "samples"
-  )
-
-  obs_mask <- !is.na(assay(combined, 1))
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    message("==> Between-batch correction (global median ratio normalisation)")
-    combined <- batch_global_median_correct(combined)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 # Per-feature batch median ratio correction.
@@ -753,125 +440,6 @@ batch_global_median_correct <- function(se) {
   se
 }
 
-correct_loess_limma <- function(data, loess_span) {
-  suppressPackageStartupMessages(library(limma))
-
-  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (LOESS)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch(se_b, span = loess_span)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before limma which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (limma removeBatchEffect)")
-    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
-      x     = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_samples_limma <- function(data, qc_span, sample_span, sample_min_obs,
-                                         min_qc_per_batch = 4, min_ltqc_validate = 3,
-                                         validate_samples_correction = TRUE) {
-  suppressPackageStartupMessages(library(limma))
-
-  # LOESS handles NAs natively via is.finite() — no LoD/2 before this step
-  message("==> Drift correction (per-batch: QC-based if enough QC, else QC-free on samples",
-          if (validate_samples_correction) " validated against ltQC, else uncorrected)"
-          else " applied unconditionally -- validation disabled)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_hybrid(se_b, qc_span = qc_span, sample_span = sample_span,
-                                  sample_min_obs = sample_min_obs,
-                                  min_qc_per_batch = min_qc_per_batch,
-                                  min_ltqc_validate = min_ltqc_validate,
-                                  validate = validate_samples_correction)
-    }),
-    merge = "samples"
-  )
-
-  # Capture obs_mask after merge so column order matches combined
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before limma which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  n_batches <- length(unique(colData(combined)$Batch))
-  if (n_batches < 2) {
-    message("==> Batch correction skipped (only one batch detected)")
-  } else {
-    combined <- clamp_nonpositive(combined, "before log2")
-    message("==> Log2 transformation")
-    assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
-
-    message("==> Between-batch correction (limma removeBatchEffect)")
-    assay(combined, 1, withDimnames = FALSE) <- removeBatchEffect(
-      x     = assay(combined, 1),
-      batch = as.factor(colData(combined)$Batch)
-    )
-
-    message("==> Back-transforming to raw scale")
-    assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_combat_only <- function(data, combat_mean_only = "auto", combat_par_prior = "auto") {
-  suppressPackageStartupMessages(library(sva))
-
-  obs_mask <- !is.na(assay(data, 1))
-  data     <- lod2_impute(data)
-  pre      <- data
-
-  data <- clamp_nonpositive(data, "before log2")
-  message("==> Log2 transformation")
-  assay(data, 1, withDimnames = FALSE) <- log2(assay(data, 1))
-
-  message("==> Batch correction (ComBat only, no drift correction)")
-  assay(data, 1, withDimnames = FALSE) <- combat_correct(
-    data, mean_only = combat_mean_only, par_prior = combat_par_prior
-  )
-
-  message("==> Back-transforming to raw scale")
-  assay(data, 1, withDimnames = FALSE) <- 2^assay(data, 1)
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(data, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
 # Print per-batch counts of non-positive (and NA) values for diagnostic purposes.
 # Call before and after QCRSC to identify which batches pmp is distorting.
 diag_nonpositive <- function(se, label = "") {
@@ -935,176 +503,6 @@ correct_pmp_qcrsc <- function(data) {
   combined <- rf_impute_corrected(combined, obs_mask)
 
   list(pre = combined, post = combined, obs_mask = obs_mask)
-}
-
-correct_pmp_qcrsc_scale <- function(data) {
-  suppressPackageStartupMessages(library(pmp))
-
-  obs_mask <- !is.na(assay(data, 1))
-
-  # Identify batches pmp cannot anchor (< 4 QC samples).
-  # pmp's between-batch alignment step distorts these batches — save their
-  # original values and restore them after QCRSC runs.
-  cd           <- as.data.frame(colData(data))
-  qc_counts    <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
-  skip_batches <- names(qc_counts[qc_counts < 4])
-  orig_mat     <- assay(data, 1)
-
-  # Step 1: QC-RSC — drift correction + QC-anchored between-batch alignment
-  # for batches with >= 4 QC samples.
-  message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
-  classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
-
-  diag_nonpositive(data, "before QC-RSC")
-  combined <- QCRSC(
-    df      = data,
-    order   = colData(data)$Injection_order,
-    batch   = colData(data)$Batch,
-    classes = classes_for_pmp,
-    spar    = 0,
-    minQC   = 4
-  )
-  diag_nonpositive(combined, "after QC-RSC")
-
-  if (length(skip_batches) > 0) {
-    skip_idx <- which(as.character(colData(combined)$Batch) %in% skip_batches)
-    assay(combined, 1, withDimnames = FALSE)[, skip_idx] <- orig_mat[, skip_idx]
-    message("  Restored pre-correction values for batch(es) with <4 QCs: ",
-            paste(skip_batches, collapse = ", "))
-    diag_nonpositive(combined, "after restore")
-  }
-
-  # Clamp spline overshoot in corrected batches before any log step
-  combined <- clamp_nonpositive(combined, "after QC-RSC")
-  pre      <- combined
-
-  # Step 2: Global median scaling — only for batches pmp could not align.
-  # Scales each no-QC batch by a single factor so its overall intensity level
-  # matches the grand median of the pmp-corrected batches. One scalar per batch:
-  # no feature-specific adjustments, no disturbance to already-corrected batches.
-  # Defensible when samples are randomised (global shift is technical, not biological).
-  if (length(skip_batches) > 0) {
-    mat          <- assay(combined, 1)
-    good_batches <- setdiff(unique(as.character(cd$Batch)), skip_batches)
-    good_samp    <- which(cd$QC == "Sample" & as.character(cd$Batch) %in% good_batches)
-    ref_vals     <- mat[, good_samp, drop = FALSE]
-    grand_med    <- median(ref_vals[is.finite(ref_vals) & ref_vals > 0], na.rm = TRUE)
-
-    message("==> Global median scaling for batch(es) with <4 QCs")
-    for (b in skip_batches) {
-      b_samp <- which(cd$QC == "Sample" & as.character(cd$Batch) == b)
-      if (length(b_samp) < 2) {
-        message("  Batch ", b, ": skipped (fewer than 2 biological samples)"); next
-      }
-      b_vals    <- mat[, b_samp, drop = FALSE]
-      batch_med <- median(b_vals[is.finite(b_vals) & b_vals > 0], na.rm = TRUE)
-      if (!is.finite(batch_med) || batch_med <= 0) {
-        message("  Batch ", b, ": skipped (could not compute median)"); next
-      }
-      scale_fac <- grand_med / batch_med
-      b_all     <- which(as.character(cd$Batch) == b)
-      assay(combined, 1, withDimnames = FALSE)[, b_all] <-
-        assay(combined, 1)[, b_all] * scale_fac
-      message("  Batch ", b, ": scale factor = ", round(scale_fac, 4),
-              "  (batch median ", round(batch_med), " → grand median ", round(grand_med), ")")
-    }
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-# Per-feature median scaling variant of pmp_qcrsc_scale.
-# Identical to pmp_qcrsc_scale except that between-batch alignment for no-QC
-# batches is done per feature (each feature scaled to the grand median of that
-# feature across QC-corrected batches) rather than with a single global scalar.
-# This is consistent with how pmp QC-RSC aligns QC-anchored batches, where each
-# feature is referenced to its own global QC median. The only methodological
-# difference from the fully corrected batches is that within-batch drift
-# correction is skipped (no QC samples to anchor the spline).
-correct_pmp_qcrsc_feature_scale <- function(data) {
-  suppressPackageStartupMessages(library(pmp))
-
-  obs_mask <- !is.na(assay(data, 1))
-
-  cd           <- as.data.frame(colData(data))
-  qc_counts    <- tapply(cd$QC == "QC", as.character(cd$Batch), sum)
-  skip_batches <- names(qc_counts[qc_counts < 4])
-  orig_mat     <- assay(data, 1)
-
-  message("==> Drift correction + QC-based batch alignment (pmp QC-RSC)")
-  classes_for_pmp <- ifelse(colData(data)$QC == "QC", "QC", "Sample")
-
-  diag_nonpositive(data, "before QC-RSC")
-  combined <- QCRSC(
-    df      = data,
-    order   = colData(data)$Injection_order,
-    batch   = colData(data)$Batch,
-    classes = classes_for_pmp,
-    spar    = 0,
-    minQC   = 4
-  )
-  diag_nonpositive(combined, "after QC-RSC")
-
-  if (length(skip_batches) > 0) {
-    skip_idx <- which(as.character(colData(combined)$Batch) %in% skip_batches)
-    assay(combined, 1, withDimnames = FALSE)[, skip_idx] <- orig_mat[, skip_idx]
-    message("  Restored pre-correction values for batch(es) with <4 QCs: ",
-            paste(skip_batches, collapse = ", "))
-    diag_nonpositive(combined, "after restore")
-  }
-
-  combined <- clamp_nonpositive(combined, "after QC-RSC")
-  pre      <- combined
-
-  # Per-feature median scaling for no-QC batches.
-  # For each feature, compute its median across biological samples in the
-  # QC-corrected batches and scale the no-QC batch to match.
-  # Consistent with pmp's own feature-wise QC-median referencing.
-  if (length(skip_batches) > 0) {
-    mat          <- assay(combined, 1)
-    good_batches <- setdiff(unique(as.character(cd$Batch)), skip_batches)
-    good_samp    <- which(cd$QC == "Sample" & as.character(cd$Batch) %in% good_batches)
-
-    # Per-feature reference median from QC-corrected batches
-    ref_medians <- apply(mat[, good_samp, drop = FALSE], 1, function(x) {
-      x <- x[is.finite(x) & x > 0]
-      if (length(x) < 2) NA_real_ else median(x)
-    })
-
-    message("==> Per-feature median scaling for batch(es) with <4 QCs")
-    for (b in skip_batches) {
-      b_samp <- which(cd$QC == "Sample" & as.character(cd$Batch) == b)
-      if (length(b_samp) < 2) {
-        message("  Batch ", b, ": skipped (fewer than 2 biological samples)"); next
-      }
-
-      batch_medians <- apply(mat[, b_samp, drop = FALSE], 1, function(x) {
-        x <- x[is.finite(x) & x > 0]
-        if (length(x) < 2) NA_real_ else median(x)
-      })
-
-      scale_facs <- ref_medians / batch_medians
-      # Features where scaling cannot be computed keep their original values
-      scale_facs[!is.finite(scale_facs) | scale_facs <= 0] <- 1
-
-      b_all <- which(as.character(cd$Batch) == b)
-      mat[, b_all] <- mat[, b_all] * scale_facs
-      assay(combined, 1, withDimnames = FALSE) <- mat
-
-      n_scaled <- sum(scale_facs != 1)
-      message("  Batch ", b, ": per-feature scaling applied to ", n_scaled, "/",
-              nrow(mat), " features  (median scale factor = ",
-              round(median(scale_facs[scale_facs != 1]), 4), ")")
-    }
-  }
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
 }
 
 correct_batchcorr <- function(data,
@@ -1337,70 +735,14 @@ run_cordbat <- function(combined, ref_batch) {
   combined
 }
 
-correct_cordbat_only <- function(data, ref_batch = NULL) {
-  obs_mask <- !is.na(assay(data, 1))
-  data     <- lod2_impute(data)
-  pre      <- data
 
-  data <- run_cordbat(data, ref_batch)
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(data, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-correct_loess_cordbat <- function(data, sample_span, sample_min_obs, ref_batch = NULL) {
-  # Always the QC-free samples-based fit, deliberately — CordBat's own
-  # between-batch correction (run_cordbat -> CordBat()) is already fit on
-  # biological samples, not QC (see Funcs_CordBat_algorithm.R: QC rows are
-  # stripped out before the GGM fit and only corrected afterward using
-  # coefficients learned from Samples). Using a QC-anchored drift step ahead
-  # of it would make this combined method depend on QC for drift but not for
-  # batch correction — an inconsistent mix. This keeps loess_cordbat QC-free
-  # end to end, so it corrects every batch the same way regardless of QC
-  # coverage (unlike loess_combat/loess_samples_combat's QC-preferring hybrid).
-  #
-  # LOESS handles NAs natively — no LoD/2 before this step
-  message("==> Drift correction (QC-free LOESS on biological samples)")
-  combined <- merge_notame_sets(
-    lapply(split_by_batch(data), function(se_b) {
-      loess_correct_batch_samples(se_b, span = sample_span, min_obs = sample_min_obs)
-    }),
-    merge = "samples"
-  )
-
-  obs_mask <- !is.na(assay(combined, 1))
-
-  # LoD/2 fill before CordBat which requires a complete matrix
-  combined <- lod2_impute(combined)
-  pre      <- combined
-
-  combined <- run_cordbat(combined, ref_batch)
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(combined, obs_mask)
-
-  list(pre = pre, post = combined, obs_mask = obs_mask)
-}
-
-
-
-# K = NULL auto-derives the component count as before (2 per batch); pass an
-# explicit value to override. alpha/Cutoff/wf are forwarded to WaveICA_2.0()
-# as-is — see notame-workflow.r's WAVEICA_* help text for what each does and
-# which direction to try if correction looks too aggressive ("flattens" real
-# sample variation) vs. too weak (batch effect still visible after correction).
-correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NULL, wf = "haar") {
-  suppressPackageStartupMessages(library(WaveICA2.0))
-
-  obs_mask <- !is.na(assay(data, 1))
-  data     <- lod2_impute(data)
-
-  k_eff <- if (is.null(K)) length(unique(colData(data)$Batch)) * 2 else K
-  message("==> WaveICA2.0 correction (alpha=", alpha, ", Cutoff=", cutoff,
-          ", K=", k_eff, ", wf=", wf, ")")
-  corrected_mat <- WaveICA_2.0(
+# Runs one WaveICA_2.0() call and returns the corrected raw-scale matrix
+# (samples transposed back to features x samples, to match this pipeline's
+# assay convention). NA in k means "auto" (2 x n_batches, WaveICA2.0's own
+# implicit default in this pipeline) -- resolved here, not by the caller.
+run_waveica_once <- function(data, alpha, cutoff, k, wf) {
+  k_eff <- if (is.na(k)) length(unique(colData(data)$Batch)) * 2 else k
+  result <- WaveICA_2.0(
     data            = t(assay(data, 1)),
     wf              = wf,
     Injection_Order = as.numeric(colData(data)$Injection_order),
@@ -1408,7 +750,119 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NULL, wf = "h
     Cutoff          = cutoff,
     K               = k_eff
   )
-  assay(data, 1, withDimnames = FALSE) <- t(corrected_mat$data)
+  list(mat = t(result$data_wave), k_eff = k_eff)
+}
+
+# Auto-selects WaveICA2.0's (alpha, Cutoff, K) from the cross-product of
+# alpha_grid/cutoff_grid/k_grid -- each a vector from a comma-separated env
+# var (WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K); a single value in every grid
+# keeps today's fixed behaviour (one WaveICA_2.0() call, no search); more
+# than one candidate overall triggers this search. NA within k_grid means
+# "auto" (2 x n_batches).
+#
+# WaveICA2.0 never uses QC or ltQC to fit itself -- it corrects using only
+# injection order -- so evaluating it against either afterward is a genuine
+# held-out check regardless of which one is chosen (unlike a QC-anchored
+# drift method, where evaluating against QC would be circular). eval_group
+# ("ltQC" or "QC") picks which one; ltQC is the pipeline-wide default, QC is
+# there for when it has more samples to draw on.
+#
+# Three metrics are computed per candidate, but only one drives selection:
+#   - eval_group/Sample D-ratio -- primary, selects the winner. Consistent
+#     with every other auto-selection in this pipeline (combat_correct(),
+#     sva_correct(), auto_select_drift_correction()).
+#   - eval_dist_ratio() (PCA-space distance ratio) -- informational only.
+#     D-ratio is a per-feature metric; WaveICA2.0 is an ICA-based method
+#     whose entire mechanism operates jointly across features, so a
+#     per-feature-only metric could miss damage to that joint structure.
+#     This is the multivariate cross-check for that specific blind spot.
+#   - eval_qc_homogeneity()'s PERMANOVA R²(Batch) -- informational only.
+#     D-ratio and dist_ratio both measure technical-noise-vs-signal; neither
+#     directly asks whether batch-driven clustering actually went down,
+#     which is the literal purpose of a batch-correction method. A separate,
+#     genuinely different axis worth seeing alongside the other two.
+# All three are printed for every candidate so a disagreement is visible
+# (same reasoning as auto_select_drift_correction() printing ltQC/Sample
+# D-ratio alongside pooled LOO-CV score for its QC-tier candidates).
+#
+# Candidates run in parallel via foreach, reusing this pipeline's existing
+# registerDoParallel() setup (notame-workflow.r). WaveICA_2.0() itself calls
+# parallel::mclapply() internally (see its own R/WaveICA_2.0.R upstream,
+# github.com/dengkuistat/WaveICA_2.0), defaulting to 2 cores independently of
+# anything this pipeline configures -- so each outer worker pins
+# options(mc.cores = 1) for the duration of its own WaveICA_2.0() call, to
+# keep this pipeline's N_CORES/foreach grid the only source of parallelism.
+# Without that, n_outer_workers x 2 processes would compete for the same
+# cores instead of actually parallelizing.
+select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eval_group = "ltQC") {
+  suppressPackageStartupMessages(library(foreach))
+
+  grid <- expand.grid(alpha = alpha_grid, cutoff = cutoff_grid, k = k_grid)
+
+  if (nrow(grid) == 1) {
+    once <- run_waveica_once(data, grid$alpha[1], grid$cutoff[1], grid$k[1], wf)
+    message("  WaveICA2.0 parameters: alpha=", grid$alpha[1], ", Cutoff=", grid$cutoff[1],
+            ", K=", once$k_eff, ", wf=", wf)
+    return(once$mat)
+  }
+
+  message("  Auto-selecting WaveICA2.0 parameters (", nrow(grid),
+          " combination(s), evaluated against ", eval_group, "/Sample)")
+
+  results <- foreach(i = seq_len(nrow(grid))) %dopar% {
+    options(mc.cores = 1)
+    once <- tryCatch(run_waveica_once(data, grid$alpha[i], grid$cutoff[i], grid$k[i], wf),
+                      error = function(e) NULL)
+    if (is.null(once)) {
+      list(mat = NULL, k_eff = NA_real_, dratio = NA_real_, dist_ratio = NA_real_, permanova_r2 = NA_real_)
+    } else {
+      se_trial <- data
+      assay(se_trial, 1, withDimnames = FALSE) <- once$mat
+      list(
+        mat          = once$mat,
+        k_eff        = once$k_eff,
+        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group),
+        dist_ratio   = eval_dist_ratio(se_trial, group1 = eval_group, group2 = "Sample"),
+        permanova_r2 = eval_qc_homogeneity(se_trial, group = eval_group)$permanova_r2
+      )
+    }
+  }
+
+  dratios <- vapply(results, `[[`, numeric(1), "dratio")
+  for (i in seq_len(nrow(grid))) {
+    r <- results[[i]]
+    message("    alpha=", grid$alpha[i], ", Cutoff=", grid$cutoff[i], ", K=", r$k_eff,
+            ": ", eval_group, "/Sample D-ratio = ", if (is.na(r$dratio)) "NA" else round(r$dratio, 4),
+            ", dist_ratio = ", if (is.na(r$dist_ratio)) "NA" else round(r$dist_ratio, 4),
+            ", ", eval_group, " PERMANOVA R2(Batch) = ",
+            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4))
+  }
+
+  if (all(is.na(dratios))) {
+    message("  No candidate's ", eval_group, "/Sample D-ratio could be computed -- ",
+            "defaulting to alpha=", alpha_grid[1], ", Cutoff=", cutoff_grid[1])
+    once <- run_waveica_once(data, alpha_grid[1], cutoff_grid[1], k_grid[1], wf)
+    return(once$mat)
+  }
+
+  winner <- which.min(dratios)
+  message("  Selected: alpha=", grid$alpha[winner], ", Cutoff=", grid$cutoff[winner],
+          ", K=", results[[winner]]$k_eff,
+          "  (", eval_group, "/Sample D-ratio = ", round(dratios[winner], 4), ")")
+  results[[winner]]$mat
+}
+
+correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NA_real_, wf = "haar",
+                             eval_group = "ltQC") {
+  suppressPackageStartupMessages(library(WaveICA2.0))
+
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
+
+  message("==> WaveICA2.0 correction")
+  assay(data, 1, withDimnames = FALSE) <- select_waveica_params(
+    data, alpha_grid = alpha, cutoff_grid = cutoff, k_grid = K, wf = wf, eval_group = eval_group
+  )
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(data, obs_mask)

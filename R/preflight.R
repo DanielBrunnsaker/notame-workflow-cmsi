@@ -7,13 +7,9 @@
 # processing.
 # ─────────────────────────────────────────────────────────────────────────────
 
-VALID_CORRECTION_METHODS <- c(
-  "none", "notame", "pmp_qcrsc", "pmp_qcrsc_scale", "pmp_qcrsc_feature_scale",
-  "serrf", "batchcorr", "combat_only", "loess_combat", "loess_samples_combat", "auto_combat",
-  "huber_combat", "huber_samples_combat", "loess_samples_sva", "huber_samples_sva",
-  "loess_limma", "loess_samples_limma", "loess_feature_median", "loess_global_median", "cordbat_only",
-  "loess_cordbat", "waveica", "waveica_v1"
-)
+# Correction-method vocabulary (VALID_DRIFT_METHODS/VALID_BASES/
+# VALID_BATCH_METHODS/ATOMIC_BATCH_METHODS) and "drift:basis:batch" spec
+# parsing/legality checks live in R/method_spec.R, sourced before this file.
 
 # Appends a range-check error for `value` to `problems` if invalid.
 # NA is reported as an error unless allow_na = TRUE (used for parameters
@@ -43,6 +39,20 @@ check_numeric_list <- function(problems, name, values, min = NULL, max = NULL) {
   problems
 }
 
+# Like check_numeric_list(), but an empty vector is valid -- used for optional
+# per-feature CV-search grids (LOESS_QC_CV_SPANS, HUBER_QC_CV_KS) where
+# leaving the value unset keeps the existing fixed-span/k behaviour unchanged
+# rather than being an error.
+check_numeric_list_optional <- function(problems, name, values, min = NULL, max = NULL) {
+  if (length(values) == 0) return(problems)
+  if (all(is.na(values))) {
+    problems <- c(problems, paste0(name, " must be a comma-separated list of numbers, or empty to disable"))
+    return(problems)
+  }
+  for (v in values) problems <- check_numeric(problems, name, v, min = min, max = max)
+  problems
+}
+
 # Appends an error to `problems` if `value` (a raw config/env-var string) is
 # not "auto", "true", or "false" (case-insensitive) -- the three valid states
 # for COMBAT_MEAN_ONLY / COMBAT_PAR_PRIOR (see combat_correct() in
@@ -53,20 +63,45 @@ check_tri_logical <- function(problems, name, value) {
   problems
 }
 
+# Appends an error if `value` isn't (case-insensitively) one of `choices`.
+check_one_of <- function(problems, name, value, choices) {
+  if (!tolower(value) %in% tolower(choices))
+    problems <- c(problems, paste0(name, " must be one of: ", paste(choices, collapse = ", "),
+                                    "; got '", value, "'"))
+  problems
+}
+
+# Like check_numeric_list(), but each element may also be NA, representing
+# "auto" rather than an invalid value -- used for WAVEICA_K, where NA is
+# parse_waveica_k_list()'s own sentinel for "2 x n_batches" (notame-workflow.r),
+# not a parsing failure.
+check_waveica_k_list <- function(problems, name, values, min = NULL) {
+  if (length(values) == 0) {
+    problems <- c(problems, paste0(name, " must be a non-empty comma-separated list (numbers and/or 'auto')"))
+    return(problems)
+  }
+  for (v in values) {
+    if (is.na(v)) next  # "auto" -- always valid
+    problems <- check_numeric(problems, name, v, min = min)
+  }
+  problems
+}
+
 run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sample_sheet,
                                   project_folder, column, polarity,
                                   correction_methods, normalization,
                                   qc_detection_limit, sample_detection_limit,
                                   low_int_filter_frac, low_int_percentile,
                                   min_qc_sample_detection, min_batch_detection,
-                                  rsd_threshold, ruv_k, serrf_num, loess_span,
-                                  loess_sample_span, loess_sample_min_obs,
-                                  loess_min_qc_per_batch, loess_min_ltqc_validate,
+                                  rsd_threshold, ruv_k, serrf_num, loess_qc_span,
+                                  loess_sample_span, drift_sample_min_obs,
+                                  drift_min_qc_per_batch, drift_min_ltqc_validate,
                                   auto_loess_spans, auto_huber_ks,
                                   auto_sample_loess_spans, auto_sample_huber_ks,
                                   auto_min_qc_per_batch, auto_min_ltqc_validate, auto_min_cv_obs,
-                                  huber_k, huber_sample_k, sva_n_sv,
-                                  waveica_alpha, waveica_cutoff, waveica_k,
+                                  huber_qc_k, huber_sample_k, sva_n_sv,
+                                  loess_qc_cv_spans, huber_qc_cv_ks,
+                                  waveica_alpha, waveica_cutoff, waveica_k, waveica_eval_group,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
                                   combat_mean_only, combat_par_prior,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
@@ -130,12 +165,18 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   if (!polarity %in% c("POS", "NEG"))
     problems <- c(problems, paste0("POLARITY must be 'POS' or 'NEG', got: '", polarity, "'"))
 
-  # Correction methods
-  unknown_methods <- setdiff(correction_methods, VALID_CORRECTION_METHODS)
-  if (length(unknown_methods) > 0)
-    problems <- c(problems, paste0(
-      "Unknown CORRECTION_METHODS value(s): ", paste(unknown_methods, collapse = ", "),
-      ". Valid: ", paste(VALID_CORRECTION_METHODS, collapse = ", ")))
+  # Correction methods: each CORRECTION_METHODS entry is a "drift:basis:batch"
+  # spec (see R/method_spec.R) -- parse and legality-check every one so a
+  # typo'd or illegal spec is reported here, alongside everything else,
+  # rather than failing mid-run in the dispatch loop.
+  for (spec in correction_methods) {
+    parsed <- parse_correction_method_spec(spec)
+    if (!is.list(parsed)) {
+      problems <- c(problems, parsed)
+    } else {
+      problems <- c(problems, check_method_spec_legality(parsed, spec_label = spec))
+    }
+  }
 
   # Normalisation
   if (!normalization %in% c("none", "pqn"))
@@ -148,16 +189,16 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "LOW_INT_PERCENTILE",      low_int_percentile,      min = 0, max = 1)
   problems <- check_numeric(problems, "MIN_QC_SAMPLE_DETECTION", min_qc_sample_detection, min = 0, max = 1)
   problems <- check_numeric(problems, "RSD_THRESHOLD",           rsd_threshold,           min = 0)
-  problems <- check_numeric(problems, "LOESS_SPAN",              loess_span,              min = 0, max = 1)
+  problems <- check_numeric(problems, "LOESS_QC_SPAN",           loess_qc_span,           min = 0, max = 1)
   problems <- check_numeric(problems, "LOESS_SAMPLE_SPAN",       loess_sample_span,       min = 0, max = 1)
 
   # Numeric parameters: required integers
   problems <- check_numeric(problems, "MIN_BATCH_DETECTION",    min_batch_detection,    min = 0)
   problems <- check_numeric(problems, "RUV_K",                  ruv_k,                  min = 1)
   problems <- check_numeric(problems, "SERRF_NUM",               serrf_num,              min = 1)
-  problems <- check_numeric(problems, "LOESS_SAMPLE_MIN_OBS",    loess_sample_min_obs,   min = 4)
-  problems <- check_numeric(problems, "LOESS_MIN_QC_PER_BATCH",  loess_min_qc_per_batch, min = 1)
-  problems <- check_numeric(problems, "LOESS_MIN_LTQC_VALIDATE", loess_min_ltqc_validate, min = 2)
+  problems <- check_numeric(problems, "DRIFT_SAMPLE_MIN_OBS",    drift_sample_min_obs,   min = 4)
+  problems <- check_numeric(problems, "DRIFT_MIN_QC_PER_BATCH",  drift_min_qc_per_batch, min = 1)
+  problems <- check_numeric(problems, "DRIFT_MIN_LTQC_VALIDATE", drift_min_ltqc_validate, min = 2)
   problems <- check_numeric_list(problems, "AUTO_LOESS_SPANS",        auto_loess_spans,        min = 0, max = 1)
   problems <- check_numeric_list(problems, "AUTO_HUBER_KS",           auto_huber_ks,           min = 0)
   problems <- check_numeric_list(problems, "AUTO_SAMPLE_LOESS_SPANS", auto_sample_loess_spans, min = 0, max = 1)
@@ -165,12 +206,15 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "AUTO_MIN_QC_PER_BATCH",  auto_min_qc_per_batch,  min = 1)
   problems <- check_numeric(problems, "AUTO_MIN_LTQC_VALIDATE", auto_min_ltqc_validate, min = 2)
   problems <- check_numeric(problems, "AUTO_MIN_CV_OBS",        auto_min_cv_obs,        min = 4)
-  problems <- check_numeric(problems, "HUBER_K",        huber_k,        min = 0)
+  problems <- check_numeric(problems, "HUBER_QC_K",     huber_qc_k,     min = 0)
   problems <- check_numeric(problems, "HUBER_SAMPLE_K", huber_sample_k, min = 0)
   problems <- check_numeric(problems, "SVA_N_SV", sva_n_sv, min = 0, allow_na = TRUE)
-  problems <- check_numeric(problems, "WAVEICA_ALPHA",           waveica_alpha,  min = 0, max = 1)
-  problems <- check_numeric(problems, "WAVEICA_CUTOFF",          waveica_cutoff, min = 0, max = 1)
-  problems <- check_numeric(problems, "WAVEICA_K",               waveica_k,      min = 1, allow_na = TRUE)
+  problems <- check_numeric_list_optional(problems, "LOESS_QC_CV_SPANS", loess_qc_cv_spans, min = 0, max = 1)
+  problems <- check_numeric_list_optional(problems, "HUBER_QC_CV_KS",    huber_qc_cv_ks,    min = 0)
+  problems <- check_numeric_list(problems, "WAVEICA_ALPHA",  waveica_alpha,  min = 0, max = 1)
+  problems <- check_numeric_list(problems, "WAVEICA_CUTOFF", waveica_cutoff, min = 0, max = 1)
+  problems <- check_waveica_k_list(problems, "WAVEICA_K", waveica_k, min = 1)
+  problems <- check_one_of(problems, "WAVEICA_EVAL_GROUP", waveica_eval_group, c("ltQC", "QC"))
   problems <- check_numeric(problems, "WAVEICA_V1_K",            waveica_v1_k,     min = 1)
   problems <- check_numeric(problems, "WAVEICA_V1_T",            waveica_v1_t,     min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_V1_T2",           waveica_v1_t2,    min = 0, max = 1)

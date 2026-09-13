@@ -32,7 +32,7 @@ docker run --rm \
   -e PROJECT_FOLDER=/processed \
   -e COLUMN=RP \
   -e POLARITY=POS \
-  -e CORRECTION_METHODS="pmp_qcrsc,notame" \
+  -e CORRECTION_METHODS="none:none:pmp_qcrsc,notame_spline:qc:ruv_s" \
   your-image-name
 ```
 
@@ -61,7 +61,7 @@ Output folders are namespaced by `{COLUMN}_{POLARITY}` (e.g. `RP_POS`, `HILIC_NE
      PROJECT_FOLDER   = "C:/path/to/output",              # where results will be saved
      COLUMN           = "RP",                             # chromatographic column (e.g. RP, HILIC)
      POLARITY         = "POS",                            # ionisation polarity: POS or NEG
-     CORRECTION_METHODS = "pmp_qcrsc,notame"              # see Correction methods table below
+     CORRECTION_METHODS = "none:none:pmp_qcrsc,notame_spline:qc:ruv_s"              # see Correction methods table below
    )
    source("notame-workflow.r")
    ```
@@ -102,7 +102,7 @@ IN_XLSX: /data/msdial_export.xlsx
 PROJECT_FOLDER: /processed
 COLUMN: RP
 POLARITY: POS
-CORRECTION_METHODS: pmp_qcrsc,notame
+CORRECTION_METHODS: none:none:pmp_qcrsc,notame_spline:qc:ruv_s
 QC_DETECTION_LIMIT: 0.60
 ```
 
@@ -208,7 +208,7 @@ directly analogous substitute.
 | `FORCE_RECONVERT` | No | `FALSE` | Force re-running the conversion step even if a cached result from a previous run is found |
 | `COLUMN` | Yes | — | Chromatographic column type (e.g. `RP`, `HILIC`) |
 | `POLARITY` | Yes | — | Ionisation polarity (`POS` / `NEG`) |
-| `CORRECTION_METHODS` | No | `none,notame` | Comma-separated list of methods to run (see below) |
+| `CORRECTION_METHODS` | No | `none:none:none,notame_spline:qc:ruv_s` | Comma-separated list of `drift:basis:batch` recipes to run (see [Correction methods](#correction-methods) below) |
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
 | `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC or ltQC sample for it to be used as reference. Samples below this are removed before processing (e.g. empty injections) |
@@ -220,64 +220,114 @@ directly analogous substitute.
 | `LOW_INT_PERCENTILE` | No | `0.80` | Percentile used for the low-intensity filter |
 | `BLANK_RATIO` | No | `none` | Blank filter ratio — removes features where mean(Sample) ≤ `BLANK_RATIO` × mean(SolvBlank). Set to e.g. `1` to enable |
 | `NORMALIZATION` | No | `none` | Post-correction normalisation (`none` / `pqn`). See below |
-| `LOESS_SPAN` | No | `0.75` | LOESS smoothing span for QC-based drift correction (`loess_combat`, `loess_limma`, `loess_feature_median`, `loess_global_median`). Higher = smoother, more conservative |
-| `LOESS_SAMPLE_SPAN` | No | `0.9` | LOESS smoothing span for QC-free drift correction (`loess_samples_combat`, `loess_samples_limma`), fit on biological samples instead of QC. Wider than `LOESS_SPAN` by default since sample points are far noisier |
-| `LOESS_SAMPLE_MIN_OBS` | No | `10` | Min finite sample observations per feature required to attempt QC-free drift correction (`loess_samples_combat`, `loess_samples_limma`). Higher than the QC-based fit's threshold of 4 |
-| `LOESS_MIN_QC_PER_BATCH` | No | `4` | Min QC samples a batch needs to use QC-based drift correction in `loess_samples_combat` / `loess_samples_limma`. Batches at or above this use QC-based LOESS (`LOESS_SPAN`); batches below it trial the QC-free fit on samples (`LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`), validated per `LOESS_MIN_LTQC_VALIDATE` |
-| `LOESS_MIN_LTQC_VALIDATE` | No | `3` | Min ltQC samples a batch needs to validate the QC-free trial correction in `loess_samples_combat` / `loess_samples_limma` (batches below `LOESS_MIN_QC_PER_BATCH` only). The trial is kept if it improves the ltQC/Sample D-ratio (`MAD(ltQC)/MAD(Sample)`, lower is better) versus the uncorrected batch, discarded otherwise — D-ratio rather than raw ltQC RSD, since any real drift correction shrinks sample variance somewhat, so it only credits a disproportionate improvement in ltQC relative to Sample. Batches with fewer ltQC than this are left uncorrected — there's no way to validate the trial |
-| `LOESS_VALIDATE_SAMPLES_CORRECTION` | No | `TRUE` | Set to `FALSE` to skip ltQC validation entirely for `loess_samples_combat` / `loess_samples_limma`: any batch below `LOESS_MIN_QC_PER_BATCH` then always gets the QC-free samples-based correction, regardless of ltQC availability or outcome. Reintroduces the risk the validation step exists to catch — use deliberately |
-| `AUTO_LOESS_SPANS` | No | `0.5,0.75,0.9` | Comma-separated LOESS spans `auto_combat` evaluates as candidates for QC-based batches (leave-one-out CV on QC) |
-| `AUTO_HUBER_KS` | No | `1.0,1.345,2.0` | Comma-separated Huber regression `k` values (`MASS::rlm`, `psi.huber`) `auto_combat` evaluates for QC-based batches. Lower = more robust to outlier QC but less statistically efficient; `1.345` is `rlm`'s own default |
-| `AUTO_SAMPLE_LOESS_SPANS` | No | `0.3,0.6,0.9` | Comma-separated LOESS spans `auto_combat` evaluates for QC-free batches (fit on samples, validated against ltQC) |
-| `AUTO_SAMPLE_HUBER_KS` | No | `1.0,1.345,2.0` | Comma-separated Huber `k` values for the QC-free candidate pool |
-| `AUTO_MIN_QC_PER_BATCH` | No | `4` | Min QC samples a batch needs to be included in `auto_combat`'s QC-based candidate pool, rather than its QC-free one |
-| `AUTO_MIN_LTQC_VALIDATE` | No | `3` | Min ltQC samples a batch needs to be included in `auto_combat`'s QC-free candidate pool. Batches with fewer are left uncorrected |
-| `AUTO_MIN_CV_OBS` | No | `4` | Min finite training observations (QC, or samples for the QC-free pool) a feature needs before `auto_combat` attempts to fit any candidate for it |
-| `HUBER_K` | No | `1.345` | Huber regression tuning constant (`MASS::rlm`, `psi.huber`) for QC-based drift correction in `huber_combat`/`huber_samples_combat`. Fixed, not auto-searched — see `AUTO_HUBER_KS`/`auto_combat` for CV-selected `k` instead |
-| `HUBER_SAMPLE_K` | No | `1.345` | Huber tuning constant for the QC-free (samples-based) fit in `huber_samples_combat` |
-| `SVA_N_SV` | No | auto | Number of surrogate variables SVA estimates for `loess_samples_sva`/`huber_samples_sva`'s between-batch step (`sva::num.sv`, Buja-Eyuboglu permutation test). `0` disables SVA (Batch-only correction via `limma::removeBatchEffect`) |
-| `CORDBAT_REF_BATCH` | No | auto | Reference batch ID for CordBat methods. All other batches are corrected onto this batch. Defaults to auto-selecting the batch with the lowest median feature RSD |
-| `WAVEICA_ALPHA` | No | `0.05` | Significance threshold WaveICA2.0 (`waveica`) uses to flag a component as injection-order-associated. Lower = stricter/less aggressive |
-| `WAVEICA_CUTOFF` | No | `0.10` | Threshold (0-1) for how much of a wavelet level's variance must associate with injection order before it's treated as technical, in `waveica` |
-| `WAVEICA_K` | No | auto (`2 x n_batches`) | Number of independent components `waveica` decomposes into |
-| `WAVEICA_WF` | No | `haar` | Wavelet family for `waveica` |
-| `WAVEICA_V1_WF` | No | `haar` | Wavelet family for `waveica_v1` (the original WaveICA — separate setting from `WAVEICA_WF`, different package) |
-| `WAVEICA_V1_K` | No | `20` | Max components `waveica_v1`'s ICA step decomposes into |
-| `WAVEICA_V1_T` | No | `0.05` | Threshold (0-1) for considering a component associated with batch in `waveica_v1` — tested against real batch labels directly, unlike `WAVEICA_CUTOFF`'s injection-order proxy |
-| `WAVEICA_V1_T2` | No | `0.05` | Threshold (0-1) for considering a component associated with a biological comparison group in `waveica_v1`. Currently inert — this pipeline has no biological-group column to supply `waveica_v1`'s optional `group` argument |
-| `WAVEICA_V1_ALPHA` | No | `0` | Trade-off (0-1) between sample-wise and variable-wise independence in `waveica_v1`'s ICA step. Not the same parameter as `WAVEICA_ALPHA` — same name, unrelated meaning, different package |
-| `COMBAT_MEAN_ONLY` | No | `auto` | Whether ComBat (`combat_only`, `loess_combat`, `loess_samples_combat`, `auto_combat`) adjusts only each feature's per-batch mean (`TRUE`) or also forces every batch's variance to match a common value (`FALSE`, ComBat's own default). Forcing variance equal across batches is the usual cause of PCA looking artificially "flattened" after correction when batches genuinely differ in spread. `auto` tries both and keeps whichever gives the better ltQC/Sample D-ratio; set `TRUE`/`FALSE` to force a specific behaviour |
+| `LOESS_QC_SPAN` | No | `0.75` | LOESS smoothing span for `drift=loess`'s QC-based fit (`basis=qc`, or `basis=hybrid`'s QC branch). Higher = smoother, more conservative |
+| `LOESS_SAMPLE_SPAN` | No | `0.9` | LOESS smoothing span for `drift=loess`'s samples-based fit (`basis=samples`, or `basis=hybrid`'s samples branch), fit on biological samples instead of QC. Wider than `LOESS_QC_SPAN` by default since sample points are far noisier |
+| `DRIFT_SAMPLE_MIN_OBS` | No | `10` | Min finite sample observations per feature required to attempt a samples-based drift fit (`basis=samples`, or `basis=hybrid`'s samples branch; applies to both `drift=loess` and `drift=huber`). Higher than the QC-based fit's threshold of 4 |
+| `DRIFT_MIN_QC_PER_BATCH` | No | `4` | Min QC samples a batch needs to use the QC-based fit under `basis=hybrid` (applies to `drift=loess` and `drift=huber` alike). Batches at or above this use the QC-based fit (`LOESS_QC_SPAN`/`HUBER_QC_K`); batches below it trial the samples-based fit (`LOESS_SAMPLE_SPAN`/`HUBER_SAMPLE_K`, `DRIFT_SAMPLE_MIN_OBS`), validated per `DRIFT_MIN_LTQC_VALIDATE`. Also the hard cutoff for `basis=qc` (no samples-based fallback there — batches below this are left uncorrected) |
+| `DRIFT_MIN_LTQC_VALIDATE` | No | `3` | Min ltQC samples a batch needs to validate the samples-based trial correction under `basis=hybrid` (batches below `DRIFT_MIN_QC_PER_BATCH` only). The trial is kept if it improves the ltQC/Sample D-ratio (`MAD(ltQC)/MAD(Sample)`, lower is better) versus the uncorrected batch, discarded otherwise — D-ratio rather than raw ltQC RSD, since any real drift correction shrinks sample variance somewhat, so it only credits a disproportionate improvement in ltQC relative to Sample. Batches with fewer ltQC than this are left uncorrected — there's no way to validate the trial |
+| `DRIFT_HYBRID_VALIDATE` | No | `TRUE` | Set to `FALSE` to skip ltQC validation entirely under `basis=hybrid`: any batch below `DRIFT_MIN_QC_PER_BATCH` then always gets the samples-based correction, regardless of ltQC availability or outcome. Reintroduces the risk the validation step exists to catch — use deliberately |
+| `AUTO_LOESS_SPANS` | No | `0.5,0.75,0.9` | Comma-separated LOESS spans `drift=auto` evaluates as candidates for the QC-based selection (leave-one-out CV on QC) |
+| `AUTO_HUBER_KS` | No | `1.0,1.345,2.0` | Comma-separated Huber regression `k` values (`MASS::rlm`, `psi.huber`) `drift=auto` evaluates as candidates for the QC-based selection. Lower = more robust to outlier QC but less statistically efficient; `1.345` is `rlm`'s own default |
+| `AUTO_SAMPLE_LOESS_SPANS` | No | `0.3,0.6,0.9` | Comma-separated LOESS spans `drift=auto` evaluates for the samples-based selection (fit on samples, validated against ltQC) |
+| `AUTO_SAMPLE_HUBER_KS` | No | `1.0,1.345,2.0` | Comma-separated Huber `k` values for `drift=auto`'s samples-based candidate pool |
+| `AUTO_MIN_QC_PER_BATCH` | No | `4` | Min QC samples a batch needs to contribute to (and, under `basis=hybrid`, receive) `drift=auto`'s QC-based candidate selection, rather than its samples-based one |
+| `AUTO_MIN_LTQC_VALIDATE` | No | `3` | Min ltQC samples a batch needs to contribute to `drift=auto`'s samples-based candidate selection. Under `basis=samples`, once a winner is chosen it's applied to every batch regardless of this threshold — it only decides which batches help pick the winner. Under `basis=hybrid`, batches with fewer are left uncorrected |
+| `AUTO_MIN_CV_OBS` | No | `4` | Min finite training observations (QC, or samples for the samples-based pool) a feature needs before `drift=auto` attempts to fit any candidate for it |
+| `HUBER_QC_K` | No | `1.345` | Huber regression tuning constant (`MASS::rlm`, `psi.huber`) for `drift=huber`'s QC-based fit (`basis=qc`, or `basis=hybrid`'s QC branch). Fixed, not auto-searched — see `HUBER_QC_CV_KS` for per-feature CV selection, or `AUTO_HUBER_KS`/`drift=auto` for a dataset-wide CV-chosen `k` instead |
+| `HUBER_SAMPLE_K` | No | `1.345` | Huber tuning constant for `drift=huber`'s samples-based fit (`basis=samples`, or `basis=hybrid`'s samples branch) |
+| `SVA_N_SV` | No | auto | Number of surrogate variables SVA estimates for `batch=sva`'s correction step (`sva::num.sv`, Buja-Eyuboglu permutation test). `0` disables SVA (Batch-only correction via `limma::removeBatchEffect`) |
+| `LOESS_QC_CV_SPANS` | No | (disabled) | Comma-separated LOESS span candidates for `drift=loess`'s QC-based step (`basis=qc`, or `basis=hybrid`'s QC branch). When set, span is chosen per **feature** via leave-one-out CV on QC (mirroring `notame::correct_drift()`'s own per-feature `smooth.spline()` parameter selection) instead of one shared `LOESS_QC_SPAN`. Safe per-feature only because it's evaluated against QC (technical replicates); not offered for `basis=samples` |
+| `HUBER_QC_CV_KS` | No | (disabled) | Same idea as `LOESS_QC_CV_SPANS`, for `drift=huber`'s QC-based step |
+| `CORDBAT_REF_BATCH` | No | auto | Reference batch ID for `batch=cordbat`. All other batches are corrected onto this batch. Defaults to auto-selecting the batch with the lowest median feature RSD |
+| `WAVEICA_ALPHA` | No | `0.05` | Comma-separated significance threshold(s) `batch=waveica` (WaveICA2.0) uses to flag a component as injection-order-associated. Lower = stricter/less aggressive. A single value is fixed; multiple values (e.g. `0.01,0.05,0.10`) trigger a search (see below) |
+| `WAVEICA_CUTOFF` | No | `0.10` | Comma-separated threshold(s) (0-1) for how much of a wavelet level's variance must associate with injection order before it's treated as technical. Single value fixed, multiple values searched |
+| `WAVEICA_K` | No | `auto` (`2 x n_batches`) | Comma-separated number(s) of independent components to decompose into. Each entry is a number or `auto` (`2 x n_batches`, resolved per-run). Single value fixed, multiple values searched |
+| `WAVEICA_WF` | No | `haar` | Wavelet family for `batch=waveica`. Not searched (kept fixed — see [Correction methods](#correction-methods)) |
+| `WAVEICA_EVAL_GROUP` | No | `ltQC` | Which group (`ltQC` or `QC`) the `WAVEICA_ALPHA`/`WAVEICA_CUTOFF`/`WAVEICA_K` search evaluates candidates against (D-ratio vs. Sample). WaveICA2.0 never fits on QC or ltQC — it corrects using only injection order — so either is a genuine held-out reference; `QC` is worth trying if it has more samples than ltQC in your data |
+| `WAVEICA_V1_WF` | No | `haar` | Wavelet family for `batch=waveica_v1` (the original WaveICA — separate setting from `WAVEICA_WF`, different package) |
+| `WAVEICA_V1_K` | No | `20` | Max components `batch=waveica_v1`'s ICA step decomposes into |
+| `WAVEICA_V1_T` | No | `0.05` | Threshold (0-1) for considering a component associated with batch in `batch=waveica_v1` — tested against real batch labels directly, unlike `WAVEICA_CUTOFF`'s injection-order proxy |
+| `WAVEICA_V1_T2` | No | `0.05` | Threshold (0-1) for considering a component associated with a biological comparison group in `batch=waveica_v1`. Currently inert — this pipeline has no biological-group column to supply `waveica_v1`'s optional `group` argument |
+| `WAVEICA_V1_ALPHA` | No | `0` | Trade-off (0-1) between sample-wise and variable-wise independence in `batch=waveica_v1`'s ICA step. Not the same parameter as `WAVEICA_ALPHA` — same name, unrelated meaning, different package |
+| `COMBAT_MEAN_ONLY` | No | `auto` | Whether ComBat (`batch=combat`, with any drift method) adjusts only each feature's per-batch mean (`TRUE`) or also forces every batch's variance to match a common value (`FALSE`, ComBat's own default). Forcing variance equal across batches is the usual cause of PCA looking artificially "flattened" after correction when batches genuinely differ in spread. `auto` tries both and keeps whichever gives the better ltQC/Sample D-ratio; set `TRUE`/`FALSE` to force a specific behaviour |
 | `COMBAT_PAR_PRIOR` | No | `auto` | Whether ComBat's empirical Bayes prior is estimated parametrically (`TRUE`, assumes a Normal/Inverse-Gamma shape — faster) or non-parametrically (`FALSE` — slower, more robust to non-Gaussian batch effects). `auto` tries both and keeps whichever gives the better ltQC/Sample D-ratio, same mechanism as `COMBAT_MEAN_ONLY` |
 | `N_CORES` | No | all - 1 | Number of CPU cores for parallelisation |
-| `RUV_K` | No | `3` | Unwanted variation factors for RUV (notame method only) |
+| `RUV_K` | No | `3` | Unwanted variation factors for `batch=ruv_s` (notame's RUV-S) |
 
 ## Correction methods
 
-| Method | Description | Parameters |
+Each `CORRECTION_METHODS` entry is a `drift:basis:batch` recipe — three independent choices, not one opaque method name — so any combination below is directly reachable without new code. Each recipe gets its own output subfolder (colons become dashes in the folder name; the recipe string itself, colons included, is preserved everywhere else — logs, the `method` column in QC summary CSVs, `method_comparison.csv`).
+
+```
+CORRECTION_METHODS="loess:hybrid:combat,huber:qc:feature_median,none:none:cordbat"
+```
+
+### 1. Drift method (1st field)
+
+| Value | Description | Parameters |
 |---|---|---|
-| `none` | Imputation only (no correction; baseline) | — |
-| `notame` | Per-batch cubic spline drift correction followed by RUV-S batch correction using pooled QC samples. Batch correction is skipped when only one batch is present. Described in the original notame [paper](https://www.mdpi.com/2218-1989/10/4/135). | `RUV_K` |
-| `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift. | — |
-| `pmp_qcrsc_scale` | As `pmp_qcrsc`, plus global median scaling for any batch with fewer than 4 QC samples (which pmp cannot spline-correct); pmp-corrected batches are left untouched. | — |
-| `pmp_qcrsc_feature_scale` | As `pmp_qcrsc_scale`, but uses per-feature median scaling for the no-QC batches instead of a single global factor, consistent with pmp's own feature-wise alignment. | — |
-| `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). | `SERRF_NUM` |
-| `batchcorr` | Cluster-based spline drift correction followed by between-batch normalisation using the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.). | — |
-| `combat_only` | ComBat batch correction only (no drift correction). | `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `loess_combat` | Per-batch LOESS drift correction (QC-based) followed by ComBat batch correction. | `LOESS_SPAN`, `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `loess_samples_combat` | Per-batch LOESS drift correction, chosen per batch in three tiers: (1) QC-based (`LOESS_SPAN`) if the batch has at least `LOESS_MIN_QC_PER_BATCH` QC samples; (2) otherwise, a QC-free trial fit on biological samples (`LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`), kept only if it measurably improves the ltQC/Sample D-ratio (`MAD(ltQC)/MAD(Sample)`, lower is better) in that batch versus leaving it uncorrected — a genuine held-out check, since ltQC is never used to fit the trial, and a ratio rather than raw ltQC RSD since any real drift correction shrinks sample variance somewhat (only a *disproportionate* shrink relative to ltQC is penalized) — provided the batch has at least `LOESS_MIN_LTQC_VALIDATE` ltQC samples; (3) otherwise the batch is left uncorrected, since there's no QC or ltQC data to justify or validate a correction. Followed by ComBat batch correction. QC-based fitting is preferred whenever there's enough QC to support it — it doesn't risk removing real biological signal along with drift the way fitting on samples can; the QC-free trial's own fit uses a robust family (`family = "symmetric"`) and a wider span to guard against fitting individual-sample noise as drift. | `LOESS_SPAN`, `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`, `LOESS_MIN_QC_PER_BATCH`, `LOESS_MIN_LTQC_VALIDATE`, `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `huber_combat` | Per-batch Huber robust regression drift correction (QC-based, `MASS::rlm`), at a fixed `HUBER_K` (not auto-searched), followed by ComBat batch correction. The Huber equivalent of `loess_combat` — a single rigid linear trend instead of a locally flexible curve; more stable than LOESS at small QC counts but can't track curved drift. | `HUBER_K`, `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `huber_samples_combat` | Huber equivalent of `loess_samples_combat`: the same three-tier per-batch choice (QC-based `HUBER_K` if the batch has at least `LOESS_MIN_QC_PER_BATCH` QC samples; otherwise a QC-free trial on samples at `HUBER_SAMPLE_K`, kept only if it improves the ltQC/Sample D-ratio; otherwise uncorrected), followed by ComBat. Reuses `LOESS_MIN_QC_PER_BATCH`/`LOESS_MIN_LTQC_VALIDATE`/`LOESS_SAMPLE_MIN_OBS`/`LOESS_VALIDATE_SAMPLES_CORRECTION` — those thresholds are about how much data a fit needs to be trusted, not specific to the LOESS algorithm. | `HUBER_K`, `HUBER_SAMPLE_K`, `LOESS_SAMPLE_MIN_OBS`, `LOESS_MIN_QC_PER_BATCH`, `LOESS_MIN_LTQC_VALIDATE`, `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `loess_samples_sva` | Same per-batch three-tier LOESS drift correction as `loess_samples_combat`, but SVA (Surrogate Variable Analysis, `sva` package) instead of ComBat for the between-batch step: known `Batch` plus `SVA_N_SV` latent surrogate variables (structure not already explained by `Batch`) are regressed out together via `limma::removeBatchEffect()`. Genuinely QC-free at both stages — the drift step falls back to a samples-based fit when QC is insufficient, and SVA itself needs no QC or replicate anchor, only known batch labels. More flexible than ComBat's per-batch mean/variance shift, at the cost of being less directly interpretable. | `LOESS_SPAN`, `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`, `LOESS_MIN_QC_PER_BATCH`, `LOESS_MIN_LTQC_VALIDATE`, `SVA_N_SV` |
-| `huber_samples_sva` | Huber equivalent of `loess_samples_sva`: same three-tier drift correction as `huber_samples_combat`, with SVA instead of ComBat for the between-batch step. | `HUBER_K`, `HUBER_SAMPLE_K`, `LOESS_SAMPLE_MIN_OBS`, `LOESS_MIN_QC_PER_BATCH`, `LOESS_MIN_LTQC_VALIDATE`, `SVA_N_SV` |
-| `auto_combat` | Drift correction auto-selected from several candidates — LOESS at each span in `AUTO_LOESS_SPANS`/`AUTO_SAMPLE_LOESS_SPANS`, Huber robust regression (`MASS::rlm`) at each `k` in `AUTO_HUBER_KS`/`AUTO_SAMPLE_HUBER_KS`, and a flat/no-op baseline — followed by ComBat batch correction. Unlike `loess_samples_combat`, the choice isn't made independently per batch: evidence is pooled across all batches in the same tier (leave-one-out CV on QC for QC-based batches; held-out ltQC/Sample D-ratio for QC-free batches fit on samples) before picking one winner per tier, so every batch in a tier uses the same method — no mixing methods across batches, and more evidence feeds each decision than any single batch could offer. New/experimental — a separate method from the `loess_*` family rather than a change to them, meant to be validated against those before potentially replacing them. | `AUTO_LOESS_SPANS`, `AUTO_HUBER_KS`, `AUTO_SAMPLE_LOESS_SPANS`, `AUTO_SAMPLE_HUBER_KS`, `AUTO_MIN_QC_PER_BATCH`, `AUTO_MIN_LTQC_VALIDATE`, `AUTO_MIN_CV_OBS`, `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
-| `loess_limma` | Per-batch LOESS drift correction (QC-based) followed by `limma::removeBatchEffect()` for between-batch correction. Appropriate when QC data is partially compromised. | `LOESS_SPAN` |
-| `loess_samples_limma` | Same per-batch three-tier choice as `loess_samples_combat`, but with `limma::removeBatchEffect()` instead of ComBat for between-batch correction. | `LOESS_SPAN`, `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`, `LOESS_MIN_QC_PER_BATCH`, `LOESS_MIN_LTQC_VALIDATE` |
-| `loess_feature_median` | Per-batch LOESS drift correction (QC-based) followed by per-feature median ratio normalisation. Scales each batch so its biological sample median per feature matches the grand median. More flexible than global scaling but noisier for sparse features. QC-independent. | `LOESS_SPAN` |
-| `loess_global_median` | Per-batch LOESS drift correction (QC-based) followed by global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. | `LOESS_SPAN` |
-| `cordbat_only` | CordBat batch correction only (no drift correction). Uses a Gaussian Graphical Model built from correlated feature communities to learn per-feature scale and offset parameters. Requires a reference batch (auto-selected by default). | `CORDBAT_REF_BATCH` |
-| `loess_cordbat` | Per-batch LOESS drift correction, always QC-free (fit on biological samples, `LOESS_SAMPLE_SPAN`/`LOESS_SAMPLE_MIN_OBS`) — deliberately, since CordBat's own between-batch step is also fit on biological samples rather than QC, so the combined method stays QC-free end to end rather than mixing a QC-anchored drift step with a QC-free batch-correction step. Followed by CordBat batch correction. Requires a reference batch (auto-selected by default, from QC-quality where available). | `LOESS_SAMPLE_SPAN`, `LOESS_SAMPLE_MIN_OBS`, `CORDBAT_REF_BATCH` |
-| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). Uses injection order as a proxy for batch structure rather than batch labels directly. | `WAVEICA_ALPHA`, `WAVEICA_CUTOFF`, `WAVEICA_K`, `WAVEICA_WF` |
-| `waveica_v1` | Original WaveICA (Deng et al.) — wavelet+ICA correction using real batch labels directly, rather than the injection-order proxy WaveICA2.0 uses. May be preferable when batch labels are known and reliable. Defaults are the package's own, not tuned for this pipeline. | `WAVEICA_V1_WF`, `WAVEICA_V1_K`, `WAVEICA_V1_T`, `WAVEICA_V1_T2`, `WAVEICA_V1_ALPHA` |
+| `none` | No within-batch drift correction. | — |
+| `loess` | LOESS drift correction. | `LOESS_QC_SPAN`, `LOESS_SAMPLE_SPAN`, `LOESS_QC_CV_SPANS` |
+| `huber` | Huber robust regression (`MASS::rlm`) — a single rigid linear trend instead of a locally flexible curve; more stable than LOESS at small QC counts but can't track curved drift. | `HUBER_QC_K`, `HUBER_SAMPLE_K`, `HUBER_QC_CV_KS` |
+| `auto` | Auto-selected via cross-validation from several LOESS spans, several Huber `k` values, and a flat/no-op baseline. Evidence is pooled across all relevant batches before picking one winner (leave-one-out CV on QC for the QC-based selection; held-out ltQC/Sample D-ratio for the samples-based selection) — every batch that gets corrected uses the same method, never a different one per batch. | `AUTO_LOESS_SPANS`, `AUTO_HUBER_KS`, `AUTO_SAMPLE_LOESS_SPANS`, `AUTO_SAMPLE_HUBER_KS`, `AUTO_MIN_QC_PER_BATCH`, `AUTO_MIN_LTQC_VALIDATE`, `AUTO_MIN_CV_OBS` |
+| `notame_spline` | notame's own per-feature cubic smoothing spline (`notame::correct_drift()`), which auto-tunes its own smoothness per feature via cross-validation internally. Only supports `basis=qc`. | — |
+
+### 2. Basis (2nd field)
+
+Which data the drift method is fit against. Must be `none` if and only if drift method is `none`.
+
+| Value | Description |
+|---|---|
+| `qc` | Fit only on QC samples, only for batches with at least `DRIFT_MIN_QC_PER_BATCH` QC samples. Batches below that are left uncorrected — no fallback. |
+| `samples` | Fit only on biological samples, for every batch, regardless of QC availability. The samples-based fit uses a robust family (LOESS: `family="symmetric"`) and a wider span/looser `k` by default to guard against fitting individual-sample noise as drift. |
+| `hybrid` | QC-based if the batch has at least `DRIFT_MIN_QC_PER_BATCH` QC samples; otherwise a samples-based trial, kept only if it measurably improves the ltQC/Sample D-ratio (`MAD(ltQC)/MAD(Sample)`, lower is better — see `DRIFT_MIN_LTQC_VALIDATE`) versus leaving it uncorrected — a genuine held-out check, since ltQC is never used to fit the trial; otherwise left uncorrected. QC-based fitting is preferred whenever there's enough QC to support it, since it doesn't risk removing real biological signal along with drift the way fitting on samples can. `DRIFT_HYBRID_VALIDATE=FALSE` skips the ltQC check and always keeps the samples-based trial. |
+
+### 3. Batch method (3rd field)
+
+| Value | Description | Parameters |
+|---|---|---|
+| `none` | No between-batch step. | — |
+| `combat` | ComBat batch correction. | `COMBAT_MEAN_ONLY`, `COMBAT_PAR_PRIOR` |
+| `sva` | Surrogate Variable Analysis (`sva` package): known `Batch` plus `SVA_N_SV` latent surrogate variables (structure not already explained by `Batch`) are regressed out together via `limma::removeBatchEffect()`. Needs no QC or replicate anchor, only known batch labels — more flexible than ComBat's per-batch mean/variance shift, at the cost of being less directly interpretable. | `SVA_N_SV` |
+| `limma` | `limma::removeBatchEffect()`. Appropriate when QC data is partially compromised. | — |
+| `feature_median` | Per-feature median ratio normalisation. Scales each batch so its biological sample median per feature matches the grand median. More flexible than global scaling but noisier for sparse features. QC-independent. | — |
+| `global_median` | Global median ratio normalisation. Computes one scaling factor per batch from the median of all biological sample intensities and applies it uniformly to all features. Assumes a constant multiplicative offset per batch. QC-independent. | — |
+| `ruv_s` | notame's RUV-S, using pooled QC samples. QC-anchored. Described in the original notame [paper](https://www.mdpi.com/2218-1989/10/4/135). | `RUV_K` |
+| `cordbat` | CordBat — Gaussian Graphical Model built from correlated feature communities to learn per-feature scale and offset parameters. Requires a reference batch (auto-selected by default, from QC quality where available). Accepts drift-corrected input (e.g. `loess:samples:cordbat`) or raw input (`none:none:cordbat`). | `CORDBAT_REF_BATCH` |
+| `batchcorr` | Cluster-based spline drift correction + between-batch normalisation from the [batchCorr](https://link.springer.com/article/10.1007/s11306-016-1124-4) package (Brunius et al.) — couples drift and batch correction internally, so **requires `drift=none`**. | — |
+| `waveica` | WaveICA 2.0 — wavelet-based correction for both drift and batch effects, QC-independent ([Deng et al. 2021](https://link.springer.com/article/10.1007/s11306-021-01839-7)). Uses injection order as a proxy for batch structure rather than batch labels directly. Couples drift and batch correction internally, so **requires `drift=none`**. `WAVEICA_ALPHA`/`WAVEICA_CUTOFF`/`WAVEICA_K` each accept a comma-separated list; more than one candidate overall triggers a search over the full cross-product, evaluated against `WAVEICA_EVAL_GROUP`/Sample D-ratio (primary — selects the winner), with PCA-space distance ratio and PERMANOVA R²(Batch) printed alongside every candidate as independent cross-checks (informational only — WaveICA is an ICA-based method operating jointly across features, so a purely per-feature metric like D-ratio could miss damage to that joint structure; the other two catch that). Candidates run in parallel via this pipeline's existing `foreach`/`N_CORES` setup, with `mc.cores` pinned to 1 inside each worker to avoid nested-parallelism oversubscription against WaveICA2.0's own internal `parallel::mclapply()` call. `WAVEICA_WF` is not searched. | `WAVEICA_ALPHA`, `WAVEICA_CUTOFF`, `WAVEICA_K`, `WAVEICA_WF`, `WAVEICA_EVAL_GROUP` |
+| `waveica_v1` | Original WaveICA (Deng et al.) — wavelet+ICA correction using real batch labels directly, rather than the injection-order proxy WaveICA2.0 uses. May be preferable when batch labels are known and reliable. Defaults are the package's own, not tuned for this pipeline. Couples drift and batch correction internally, so **requires `drift=none`**. | `WAVEICA_V1_WF`, `WAVEICA_V1_K`, `WAVEICA_V1_T`, `WAVEICA_V1_T2`, `WAVEICA_V1_ALPHA` |
+| `pmp_qcrsc` | QC-RSC (Quality Control-Robust Spline Correction) from the [pmp](https://bioconductor.org/packages/pmp/) package. Fits a smoothing spline through QC samples within each batch to correct signal drift and align batches in one step. Batches with fewer than 4 QC samples are left uncorrected (pmp cannot spline-fit them). Couples drift and batch correction internally, so **requires `drift=none`**. | — |
+| `serrf` | SERRF (Systematic Error Removal using Random Forest). Per-feature random forest models trained on QC samples to correct systematic error. Adapted from [Fan et al., Analytical Chemistry 2019](https://doi.org/10.1021/acs.analchem.8b05592). Couples drift and batch correction internally, so **requires `drift=none`**. | `SERRF_NUM` |
+
+### Examples
+
+| Recipe | Equivalent to (pre-refactor naming, for reference) |
+|---|---|
+| `none:none:none` | Imputation only, no correction |
+| `notame_spline:qc:ruv_s` | the original `notame` method |
+| `loess:qc:combat` | `loess_combat` |
+| `loess:hybrid:combat` | `loess_samples_combat` |
+| `huber:qc:combat` | `huber_combat` |
+| `huber:hybrid:combat` | `huber_samples_combat` |
+| `loess:hybrid:sva` | `loess_samples_sva` |
+| `huber:hybrid:sva` | `huber_samples_sva` |
+| `auto:hybrid:combat` | `auto_combat` |
+| `loess:qc:limma` | `loess_limma` |
+| `loess:hybrid:limma` | `loess_samples_limma` |
+| `loess:qc:feature_median` | `loess_feature_median` |
+| `loess:qc:global_median` | `loess_global_median` |
+| `none:none:cordbat` | `cordbat_only` |
+| `loess:samples:cordbat` | `loess_cordbat` |
+| `none:none:waveica` | `waveica` |
+| `none:none:waveica_v1` | `waveica_v1` |
+| `none:none:combat` | `combat_only` |
+| `none:none:pmp_qcrsc` | `pmp_qcrsc` |
+| `none:none:batchcorr` | `batchcorr` |
+| `none:none:serrf` | `serrf` |
+| `huber:qc:feature_median` | *(new — no pre-refactor equivalent)* |
+
+Note: `loess:qc:*`/`huber:qc:*` add a batch-level minimum-QC gate (`DRIFT_MIN_QC_PER_BATCH`) that the old `loess_combat`/`huber_combat`/`loess_limma`/`loess_feature_median`/`loess_global_median` didn't have (they only checked per-feature QC counts) — batches below the threshold are now left uncorrected instead of partially corrected feature-by-feature. `pmp_qcrsc_scale`/`pmp_qcrsc_feature_scale` (the median-scaling fallback variants for low-QC batches) have been removed; use plain `pmp_qcrsc` instead.
 
 ## Normalisation
 

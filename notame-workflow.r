@@ -19,6 +19,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/config.R")
+source("R/method_spec.R")
 source("R/preflight.R")
 source("R/notame_format.R")
 source("R/msdial_to_notame.R")
@@ -90,15 +91,59 @@ if both are set for the same parameter.
   POLARITY              Ionisation polarity. Required.
                         Values:  POS | NEG
 
-  CORRECTION_METHODS    Comma-separated list of correction methods to run.
-                        Each method is saved to its own output subfolder.
-                        Default: none,notame
-                        Values:  none | notame | pmp_qcrsc | pmp_qcrsc_scale | pmp_qcrsc_feature_scale | serrf |
-                                 batchcorr | combat_only | loess_combat | loess_samples_combat |
-                                 huber_combat | huber_samples_combat |
-                                 loess_samples_sva | huber_samples_sva |
-                                 loess_limma | loess_samples_limma | loess_feature_median | loess_global_median |
-                                 cordbat_only | loess_cordbat | waveica | waveica_v1 | auto_combat
+  CORRECTION_METHODS    Comma-separated list of correction 'recipes' to run. Each recipe is a
+                        'drift:basis:batch' triple (e.g. 'loess:hybrid:combat'), not a single
+                        opaque method name -- see the three axes below. Each recipe is saved to
+                        its own output subfolder (colons replaced with dashes in the folder name).
+                        Default: none:none:none,notame_spline:qc:ruv_s
+
+                        DRIFT_METHOD (1st field) -- how within-batch drift is removed, before any
+                        batch step:
+                          none           no drift correction
+                          loess          LOESS drift correction (LOESS_QC_SPAN / LOESS_SAMPLE_SPAN)
+                          huber          Huber robust regression (HUBER_QC_K / HUBER_SAMPLE_K)
+                          auto           auto-selected via cross-validation from LOESS spans
+                                         (AUTO_LOESS_SPANS/AUTO_SAMPLE_LOESS_SPANS), Huber k's
+                                         (AUTO_HUBER_KS/AUTO_SAMPLE_HUBER_KS), and a flat/no-op
+                                         baseline -- ONE method is chosen for the whole run (per
+                                         basis), not a different one per batch
+                          notame_spline  notame's own per-feature cubic smoothing spline
+                                         (notame::correct_drift()); only supports basis=qc
+
+                        BASIS (2nd field) -- which data the drift method is fit against. Must be
+                        'none' if and only if DRIFT_METHOD is 'none':
+                          qc       fit only on QC samples, only for batches with
+                                   >= DRIFT_MIN_QC_PER_BATCH QC; batches below that are left
+                                   uncorrected, no fallback
+                          samples  fit only on biological samples, for every batch, regardless of
+                                   QC availability
+                          hybrid   QC-based if the batch has enough QC (DRIFT_MIN_QC_PER_BATCH);
+                                   otherwise a samples-based trial validated against ltQC/Sample
+                                   D-ratio (DRIFT_MIN_LTQC_VALIDATE, DRIFT_HYBRID_VALIDATE), kept
+                                   only if it helps; otherwise left uncorrected
+
+                        BATCH_METHOD (3rd field) -- how between-batch differences are removed:
+                          none            no between-batch step
+                          combat          ComBat (COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR)
+                          sva             Surrogate Variable Analysis (SVA_N_SV)
+                          limma           limma::removeBatchEffect()
+                          feature_median  per-feature median ratio normalisation
+                          global_median   single global median ratio normalisation
+                          ruv_s           notame's RUV-S (RUV_K), QC-anchored
+                          cordbat         CordBat GGM-based alignment (CORDBAT_REF_BATCH)
+                          batchcorr       batchCorr cluster spline + normalizeBatches() -- couples
+                                          drift+batch internally, requires drift_method=none
+                          waveica         WaveICA2.0 (WAVEICA_*) -- couples drift+batch, requires
+                                          drift_method=none
+                          waveica_v1      original WaveICA (WAVEICA_V1_*) -- couples drift+batch,
+                                          requires drift_method=none
+                          pmp_qcrsc       pmp QC-RSC spline -- couples drift+batch, requires
+                                          drift_method=none
+                          serrf           SERRF random-forest correction (SERRF_NUM) -- couples
+                                          drift+batch, requires drift_method=none
+
+                        Examples: 'loess:hybrid:combat', 'huber:qc:feature_median',
+                        'none:none:cordbat', 'auto:hybrid:sva'
 
   QC_DETECTION_LIMIT    Min fraction of QC samples a feature must be detected in
                         Default: 0.60
@@ -141,196 +186,256 @@ if both are set for the same parameter.
                         Controls both the global (_rsdXX) and per-batch (_batchrsdXX) outputs.
                         Default: 0.30
 
-  RUV_K                 Number of unwanted variation factors for RUV (notame method only).
+  RUV_K                 Number of unwanted variation factors for batch_method=ruv_s (notame's RUV-S).
                         Default: 3
 
   SERRF_NUM             Number of correlated features used as RF predictors per feature model
-                        in SERRF. Lower = less overfitting risk; recommended ≤ floor(QC_n/2).
-                        Automatically capped at floor(min_QC_per_batch / 2) at runtime.
+                        in batch_method=serrf (SERRF). Lower = less overfitting risk; recommended
+                        ≤ floor(QC_n/2). Automatically capped at floor(min_QC_per_batch / 2) at runtime.
                         Default: 5
 
-  LOESS_SPAN            LOESS smoothing span for QC-based drift correction (loess_combat, loess_limma,
-                        loess_feature_median, loess_global_median). Higher = smoother, more
-                        conservative correction.
+  LOESS_QC_SPAN         LOESS smoothing span for drift_method=loess's QC-based fit (basis=qc, or
+                        basis=hybrid's QC branch). Higher = smoother, more conservative correction.
                         Default: 0.75
 
-  LOESS_SAMPLE_SPAN     LOESS smoothing span for QC-free drift correction (loess_samples_combat,
-                        loess_samples_limma, loess_cordbat), fit on biological samples instead of
-                        QC. Wider than LOESS_SPAN by default since each point is a unique
-                        biological measurement, not a technical replicate — a tighter span risks
-                        fitting individual-sample noise as drift.
+  LOESS_SAMPLE_SPAN     LOESS smoothing span for drift_method=loess's samples-based fit
+                        (basis=samples, or basis=hybrid's samples branch), fit on biological
+                        samples instead of QC. Wider than LOESS_QC_SPAN by default since each point
+                        is a unique biological measurement, not a technical replicate — a tighter
+                        span risks fitting individual-sample noise as drift.
                         Default: 0.9
 
-  LOESS_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt
-                        QC-free drift correction (loess_samples_combat, loess_samples_limma,
-                        loess_cordbat). Deliberately higher than the QC-based fit's threshold of
-                        4, since sample points are far noisier. Features below this are left
-                        uncorrected for that batch.
+  DRIFT_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt a
+                        samples-based drift fit (basis=samples, or basis=hybrid's samples branch;
+                        applies to both drift_method=loess and drift_method=huber). Deliberately
+                        higher than the QC-based fit's threshold of 4, since sample points are far
+                        noisier. Features below this are left uncorrected for that batch.
                         Default: 10
 
-  LOESS_MIN_QC_PER_BATCH  Minimum QC samples a batch must have to use QC-based drift correction
-                        in loess_samples_combat / loess_samples_limma. These methods choose per
-                        batch: batches meeting this threshold are drift-corrected with QC-based
-                        LOESS (LOESS_SPAN). Batches below it try the QC-free fit on biological
-                        samples (LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS) as a trial, kept only if
-                        it improves the ltQC/Sample D-ratio — see LOESS_MIN_LTQC_VALIDATE. QC-based
-                        fitting is preferred whenever there's enough QC to support it, since it
-                        doesn't risk removing real biological signal along with drift.
+  DRIFT_MIN_QC_PER_BATCH  Minimum QC samples a batch must have to use the QC-based fit under
+                        basis=hybrid (applies to drift_method=loess and drift_method=huber alike).
+                        Batches meeting this threshold get the QC-based fit (LOESS_QC_SPAN /
+                        HUBER_QC_K). Batches below it try the samples-based fit
+                        (LOESS_SAMPLE_SPAN/HUBER_SAMPLE_K, DRIFT_SAMPLE_MIN_OBS) as a trial, kept
+                        only if it improves the ltQC/Sample D-ratio — see DRIFT_MIN_LTQC_VALIDATE.
+                        QC-based fitting is preferred whenever there's enough QC to support it,
+                        since it doesn't risk removing real biological signal along with drift.
+                        Also used by basis=qc as a hard cutoff (no samples-based fallback there —
+                        batches below this threshold are simply left uncorrected).
                         Default: 4
 
-  LOESS_MIN_LTQC_VALIDATE  Minimum ltQC samples a batch must have to validate the QC-free trial
-                        correction in loess_samples_combat / loess_samples_limma (used only for
-                        batches below LOESS_MIN_QC_PER_BATCH). The trial correction is compared
-                        against the batch's uncorrected values by ltQC/Sample D-ratio
-                        (MAD(ltQC)/MAD(Sample) — lower is better); it is kept if the D-ratio
-                        improves, discarded otherwise. D-ratio (not raw ltQC RSD) is used because
-                        any real drift correction shrinks measured sample variance somewhat, so a
-                        test that just required sample variance not to shrink would reject working
-                        corrections too — D-ratio instead only credits a disproportionate
-                        improvement in ltQC relative to Sample. Batches with fewer ltQC than this
-                        have no way to validate the trial and are left uncorrected.
+  DRIFT_MIN_LTQC_VALIDATE  Minimum ltQC samples a batch must have to validate the samples-based
+                        trial correction under basis=hybrid (used only for batches below
+                        DRIFT_MIN_QC_PER_BATCH). The trial correction is compared against the
+                        batch's uncorrected values by ltQC/Sample D-ratio (MAD(ltQC)/MAD(Sample) —
+                        lower is better); it is kept if the D-ratio improves, discarded otherwise.
+                        D-ratio (not raw ltQC RSD) is used because any real drift correction
+                        shrinks measured sample variance somewhat, so a test that just required
+                        sample variance not to shrink would reject working corrections too —
+                        D-ratio instead only credits a disproportionate improvement in ltQC
+                        relative to Sample. Batches with fewer ltQC than this have no way to
+                        validate the trial and are left uncorrected.
                         Default: 3
 
-  LOESS_VALIDATE_SAMPLES_CORRECTION  Set to FALSE to skip the ltQC validation above entirely for
-                        loess_samples_combat / loess_samples_limma: any batch below
-                        LOESS_MIN_QC_PER_BATCH then always gets the QC-free samples-based
-                        correction, regardless of ltQC availability or what it shows. This
-                        reintroduces the risk the validation step exists to catch (the trial can
-                        look fine on ltQC while still compressing real biological signal) — use
-                        deliberately, not as a default.
+  DRIFT_HYBRID_VALIDATE  Set to FALSE to skip the ltQC validation above entirely under
+                        basis=hybrid: any batch below DRIFT_MIN_QC_PER_BATCH then always gets the
+                        samples-based correction, regardless of ltQC availability or what it
+                        shows. This reintroduces the risk the validation step exists to catch (the
+                        trial can look fine on ltQC while still compressing real biological
+                        signal) — use deliberately, not as a default.
                         Default: TRUE
 
-  AUTO_LOESS_SPANS      Comma-separated LOESS spans auto_combat evaluates as candidates when QC is
-                        available (leave-one-out CV) or samples-only (held-out ltQC/Sample D-ratio
-                        — set together with AUTO_HUBER_KS as one QC-based candidate pool; see
-                        AUTO_SAMPLE_LOESS_SPANS for the separate samples-only pool).
+  AUTO_LOESS_SPANS      Comma-separated LOESS spans drift_method=auto evaluates as candidates for
+                        the QC-based selection (leave-one-out CV on QC; used when basis=qc, or
+                        basis=hybrid's QC-tier — set together with AUTO_HUBER_KS as one QC-based
+                        candidate pool; see AUTO_SAMPLE_LOESS_SPANS for the separate samples-only
+                        pool).
                         Default: 0.5,0.75,0.9
 
-  AUTO_HUBER_KS         Comma-separated Huber regression k values (MASS::rlm, psi.huber) auto_combat
-                        evaluates as candidates for QC-based batches. Lower k = more robust to
-                        outlier QC points but less statistically efficient; 1.345 is MASS::rlm's own
-                        default (~95% efficiency under Gaussian errors).
+  AUTO_HUBER_KS         Comma-separated Huber regression k values (MASS::rlm, psi.huber)
+                        drift_method=auto evaluates as candidates for the QC-based selection.
+                        Lower k = more robust to outlier QC points but less statistically
+                        efficient; 1.345 is MASS::rlm's own default (~95% efficiency under
+                        Gaussian errors).
                         Default: 1.0,1.345,2.0
 
-  AUTO_SAMPLE_LOESS_SPANS  Comma-separated LOESS spans auto_combat evaluates for batches without
-                        enough QC (fit on biological samples, validated against ltQC). Separate
-                        range from AUTO_LOESS_SPANS — see the LOESS_SAMPLE_SPAN discussion above
-                        for why a QC-free fit needs a different span range than a QC-anchored one.
+  AUTO_SAMPLE_LOESS_SPANS  Comma-separated LOESS spans drift_method=auto evaluates for the
+                        samples-based selection (basis=samples, or basis=hybrid's samples-tier;
+                        fit on biological samples, validated against ltQC). Separate range from
+                        AUTO_LOESS_SPANS — see the LOESS_SAMPLE_SPAN discussion above for why a
+                        QC-free fit needs a different span range than a QC-anchored one.
                         Default: 0.3,0.6,0.9
 
-  AUTO_SAMPLE_HUBER_KS  Comma-separated Huber k values for the samples-only candidate pool.
+  AUTO_SAMPLE_HUBER_KS  Comma-separated Huber k values for drift_method=auto's samples-based
+                        candidate pool.
                         Default: 1.0,1.345,2.0
 
-  AUTO_MIN_QC_PER_BATCH  Same role as LOESS_MIN_QC_PER_BATCH, for auto_combat: minimum QC samples
-                        a batch needs to use the QC-based (leave-one-out CV) candidate pool instead
-                        of the samples-only (ltQC-validated) one.
+  AUTO_MIN_QC_PER_BATCH  Same role as DRIFT_MIN_QC_PER_BATCH, for drift_method=auto: minimum QC
+                        samples a batch needs to contribute to (and, under basis=hybrid, receive)
+                        the QC-based (leave-one-out CV) candidate selection instead of the
+                        samples-only (ltQC-validated) one.
                         Default: 4
 
-  AUTO_MIN_LTQC_VALIDATE  Same role as LOESS_MIN_LTQC_VALIDATE, for auto_combat: minimum ltQC
-                        samples a batch needs to evaluate the samples-only candidate pool at all.
-                        Batches with fewer are left uncorrected.
+  AUTO_MIN_LTQC_VALIDATE  Same role as DRIFT_MIN_LTQC_VALIDATE, for drift_method=auto: minimum
+                        ltQC samples a batch needs to contribute to the samples-based candidate
+                        selection at all. Under basis=samples, once a winning candidate is chosen
+                        it is applied to every batch regardless of this threshold — it only
+                        affects which batches help pick the winner. Under basis=hybrid (and
+                        basis=qc, where this pool isn't used), batches with fewer are left
+                        uncorrected.
                         Default: 3
 
   AUTO_MIN_CV_OBS       Minimum finite training observations (QC, or samples for the ltQC-validated
-                        pool) a feature needs before auto_combat attempts to fit any candidate for
-                        it. Features below this are left uncorrected for that batch.
+                        pool) a feature needs before drift_method=auto attempts to fit any
+                        candidate for it. Features below this are left uncorrected for that batch.
                         Default: 4
 
-  HUBER_K               Huber regression tuning constant (MASS::rlm, psi.huber) for QC-based drift
-                        correction in huber_combat / huber_samples_combat. Fixed, not auto-searched
-                        — use AUTO_HUBER_KS/auto_combat if you want k chosen via CV instead. Lower =
-                        more robust to outlier QC points but less statistically efficient; 1.345 is
-                        MASS::rlm's own default (~95% efficiency under Gaussian errors).
+  HUBER_QC_K            Huber regression tuning constant (MASS::rlm, psi.huber) for
+                        drift_method=huber's QC-based fit (basis=qc, or basis=hybrid's QC branch).
+                        Fixed (shared across every feature), not auto-searched — see HUBER_QC_CV_KS
+                        below for per-feature CV selection within basis=qc/hybrid, or
+                        AUTO_HUBER_KS/drift_method=auto for a dataset-wide CV-chosen k instead.
+                        Lower = more robust to outlier QC points but less statistically efficient;
+                        1.345 is MASS::rlm's own default (~95% efficiency under Gaussian errors).
                         Default: 1.345
 
-  HUBER_SAMPLE_K        Huber tuning constant for QC-free drift correction (fit on biological
-                        samples) in huber_samples_combat. Separate setting from HUBER_K, same
-                        reasoning as LOESS_SAMPLE_SPAN vs LOESS_SPAN — a samples-only fit may
-                        warrant a different robustness/efficiency trade-off than a QC-anchored one.
+  HUBER_SAMPLE_K        Huber tuning constant for drift_method=huber's samples-based fit
+                        (basis=samples, or basis=hybrid's samples branch). Separate setting from
+                        HUBER_QC_K, same reasoning as LOESS_SAMPLE_SPAN vs LOESS_QC_SPAN — a
+                        samples-only fit may warrant a different robustness/efficiency trade-off
+                        than a QC-anchored one.
                         Default: 1.345
+
+  LOESS_QC_CV_SPANS     Comma-separated LOESS span candidates for drift_method=loess's QC-based
+                        step (basis=qc, or basis=hybrid's QC branch). When set, the span is chosen
+                        per FEATURE via leave-one-out CV on QC (mirroring how notame::correct_drift()
+                        's smooth.spline() step auto-selects its own smoothing parameter per feature,
+                        rather than sharing one span dataset-wide) instead of using the fixed
+                        LOESS_QC_SPAN for every feature. Safe to do per-feature specifically because
+                        this only ever evaluates against QC (pure technical replicates, nothing
+                        biological to overfit) — deliberately not offered for basis=samples, where
+                        a flexible per-feature fit could overfit real biological variation.
+                        Leave empty (default) to keep using the fixed LOESS_QC_SPAN for every feature.
+                        Default: (disabled — uses LOESS_QC_SPAN)
+
+  HUBER_QC_CV_KS        Same idea as LOESS_QC_CV_SPANS, for drift_method=huber's QC-based step:
+                        per-feature CV selection from this comma-separated k grid instead of the
+                        fixed HUBER_QC_K, when set.
+                        Default: (disabled — uses HUBER_QC_K)
 
   SVA_N_SV              Number of surrogate variables SVA (sva package) estimates for
-                        loess_samples_sva / huber_samples_sva's between-batch correction step.
-                        These are latent factors representing systematic structure in the data not
-                        already explained by known Batch; regressed out together with Batch via
-                        limma::removeBatchEffect(). Leave unset to auto-estimate via
-                        sva::num.sv(..., method = 'be') (Buja-Eyuboglu permutation test); set to 0
-                        to disable SVA and correct for known Batch only.
+                        batch_method=sva's correction step. These are latent factors representing
+                        systematic structure in the data not already explained by known Batch;
+                        regressed out together with Batch via limma::removeBatchEffect(). Leave
+                        unset to auto-estimate via sva::num.sv(..., method = 'be')
+                        (Buja-Eyuboglu permutation test); set to 0 to disable SVA and correct for
+                        known Batch only.
                         Default: (auto)
 
-  CORDBAT_REF_BATCH     Reference batch ID for CordBat (cordbat_only, loess_cordbat).
-                        All other batches are corrected onto this batch.
-                        Leave unset to auto-select the batch with the lowest median feature RSD.
+  CORDBAT_REF_BATCH     Reference batch ID for batch_method=cordbat. All other batches are
+                        corrected onto this batch. Leave unset to auto-select the batch with the
+                        lowest median feature RSD.
                         Default: (auto)
 
-  WAVEICA_ALPHA         Significance threshold WaveICA2.0 (waveica) uses to decide whether an
-                        independent component is injection-order-related and should be removed.
-                        Lower = stricter (fewer components flagged, less aggressive correction);
-                        higher = more components flagged and removed. Try lowering this first if
-                        correction looks too aggressive (flattens real sample-to-sample variation).
+  WAVEICA_ALPHA         Comma-separated significance threshold(s) batch_method=waveica (WaveICA2.0)
+                        uses to decide whether an independent component is injection-order-related
+                        and should be removed. Lower = stricter (fewer components flagged, less
+                        aggressive correction); higher = more components flagged and removed. A
+                        single value keeps that value fixed (one WaveICA_2.0() call); more than one
+                        value overall across WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K triggers a
+                        search over the full cross-product grid -- see WAVEICA_EVAL_GROUP below.
                         Default: 0.05
 
-  WAVEICA_CUTOFF        Threshold (0-1) for how much of a wavelet-decomposed level's variance must
-                        be associated with injection order before that level is considered
-                        technical and passed to ICA for cleanup. Lower = more levels get corrected
-                        (more aggressive); higher = fewer, more conservative.
+  WAVEICA_CUTOFF        Comma-separated threshold(s) (0-1) for how much of a wavelet-decomposed
+                        level's variance must be associated with injection order before that level
+                        is considered technical and passed to ICA for cleanup. Lower = more levels
+                        get corrected (more aggressive); higher = fewer, more conservative. Same
+                        single-value-fixed / multi-value-searched convention as WAVEICA_ALPHA.
                         Default: 0.10
 
-  WAVEICA_K             Number of independent components WaveICA2.0 decomposes the data into.
-                        Default here is 2 x (number of batches), which is quite small for typical
-                        feature counts — a coarse decomposition gives ICA less room to isolate
-                        narrow technical components from broad biological ones, which may be why
-                        correction looks like it removes more than just drift/batch noise. Try
-                        raising this (e.g. 10-20) if correction looks too aggressive.
-                        Default: (auto = 2 x n_batches)
+  WAVEICA_K             Comma-separated number(s) of independent components batch_method=waveica
+                        (WaveICA2.0) decomposes the data into. Each entry is either a number or the
+                        literal 'auto' (2 x number of batches, resolved per run -- quite small for
+                        typical feature counts, since a coarse decomposition gives ICA less room to
+                        isolate narrow technical components from broad biological ones). Try
+                        including a larger value (e.g. 10-20) if correction looks too aggressive.
+                        Same single-value-fixed / multi-value-searched convention as WAVEICA_ALPHA.
+                        Default: auto (= 2 x n_batches)
 
   WAVEICA_WF            Wavelet family used for the decomposition step (passed to WaveICA2.0's
                         wf argument, e.g. haar or a Daubechies family recognised by the
-                        underlying wavelet package).
+                        underlying wavelet package). Not part of the search grid -- kept fixed,
+                        since it's a categorical choice rather than a more/less-aggressive dial and
+                        including it would multiply the grid size for a dimension with no clear
+                        prior on which value helps.
                         Default: haar
 
-                        Note: these four are exposed as-is from the WaveICA2.0 package
-                        (github.com/dengkuistat/WaveICA_2.0); the direction-of-effect guidance
-                        above is based on the published method rather than inspection of this
-                        specific package version's source, so confirm empirically on your data.
+  WAVEICA_EVAL_GROUP    Which group -- 'ltQC' or 'QC' -- the WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K
+                        search (when triggered) evaluates candidates against, via D-ratio vs.
+                        Sample (MAD(group)/MAD(Sample), lower is better; the same candidate that
+                        wins by D-ratio also gets its PCA-space distance ratio and PERMANOVA
+                        R²(Batch) printed alongside every other candidate's, as an independent
+                        cross-check -- WaveICA2.0 is an ICA-based method operating jointly across
+                        features, so a purely per-feature metric like D-ratio alone could miss
+                        damage to that joint structure). WaveICA2.0 never fits on QC or ltQC -- it
+                        corrects using only injection order -- so either is a genuine held-out
+                        reference regardless of which is chosen; 'QC' is worth trying if it has
+                        more samples than ltQC in your data. Candidates are evaluated in parallel
+                        via this pipeline's existing N_CORES/foreach setup, with each worker pinning
+                        mc.cores to 1 for its own WaveICA_2.0() call to avoid nested-parallelism
+                        oversubscription against that function's own internal use of
+                        parallel::mclapply().
+                        Values: ltQC | QC
+                        Default: ltQC
 
-  WAVEICA_V1_WF         Wavelet family for waveica_v1 (the original WaveICA, not WaveICA2.0).
-                        Same meaning as WAVEICA_WF, separate setting since the two methods are
-                        independent packages.
+                        Note: WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K/WAVEICA_WF are exposed as-is
+                        from the WaveICA2.0 package (github.com/dengkuistat/WaveICA_2.0); the
+                        direction-of-effect guidance above is based on the published method rather
+                        than inspection of this specific package version's source, so confirm
+                        empirically on your data.
+
+  WAVEICA_V1_WF         Wavelet family for batch_method=waveica_v1 (the original WaveICA, not
+                        WaveICA2.0). Same meaning as WAVEICA_WF, separate setting since the two
+                        methods are independent packages.
                         Default: haar
 
-  WAVEICA_V1_K          Maximum number of components waveica_v1's ICA step decomposes into.
+  WAVEICA_V1_K          Maximum number of components batch_method=waveica_v1's ICA step decomposes into.
                         Default: 20
 
   WAVEICA_V1_T          Threshold (0-1) for considering an ICA component associated with batch
-                        in waveica_v1. Unlike WAVEICA_CUTOFF (WaveICA2.0), this tests components
-                        directly against the real batch labels rather than injection order as a
-                        proxy for them.
+                        in batch_method=waveica_v1. Unlike WAVEICA_CUTOFF (WaveICA2.0), this tests
+                        components directly against the real batch labels rather than injection
+                        order as a proxy for them.
                         Default: 0.05
 
   WAVEICA_V1_T2         Threshold (0-1) for considering an ICA component associated with a
-                        biological comparison group in waveica_v1. Not currently used in
-                        practice -- this pipeline has no biological-group column to supply
+                        biological comparison group in batch_method=waveica_v1. Not currently used
+                        in practice -- this pipeline has no biological-group column to supply
                         waveica_v1's optional `group` argument, so that protection is inactive
                         regardless of this setting. Kept for parity with the package's own
                         parameters.
                         Default: 0.05
 
   WAVEICA_V1_ALPHA      Trade-off (0-1) between sample-wise and variable-wise independence in
-                        waveica_v1's ICA step. Not the same parameter as WAVEICA_ALPHA
-                        (WaveICA2.0's significance threshold for flagging a component) --
-                        same name, unrelated meaning, different package.
+                        batch_method=waveica_v1's ICA step. Not the same parameter as
+                        WAVEICA_ALPHA (WaveICA2.0's significance threshold for flagging a
+                        component) -- same name, unrelated meaning, different package.
                         Default: 0
 
-  COMBAT_MEAN_ONLY      Whether ComBat (combat_only, loess_combat, loess_samples_combat,
-                        auto_combat) adjusts only each feature's per-batch mean (TRUE) or also
-                        forces every batch's variance to match a common value (FALSE, ComBat's own
-                        default). Forcing variance equal across batches is the usual cause of
-                        PCA looking artificially 'flattened' after correction, if batches genuinely
-                        differ in spread (e.g. different biological composition). 'auto' tries both
-                        and keeps whichever gives the better ltQC/Sample D-ratio (see
-                        combat_correct() in R/correction_methods.R) -- set TRUE or FALSE directly
-                        to skip the search and force a specific behaviour.
+                        Note: waveica_v1 uses real batch labels directly rather than injection
+                        order as a proxy for batch structure, which may make it a better fit
+                        when batch labels are known and reliable. Defaults above are the
+                        package's own defaults, not tuned for this pipeline specifically.
+
+  COMBAT_MEAN_ONLY      Whether ComBat (batch_method=combat, with any drift_method) adjusts only
+                        each feature's per-batch mean (TRUE) or also forces every batch's variance
+                        to match a common value (FALSE, ComBat's own default). Forcing variance
+                        equal across batches is the usual cause of PCA looking artificially
+                        'flattened' after correction, if batches genuinely differ in spread (e.g.
+                        different biological composition). 'auto' tries both and keeps whichever
+                        gives the better ltQC/Sample D-ratio (see combat_correct() in
+                        R/correction_methods.R) -- set TRUE or FALSE directly to skip the search
+                        and force a specific behaviour.
                         Values: auto, TRUE, FALSE
                         Default: auto
 
@@ -342,12 +447,6 @@ if both are set for the same parameter.
                         COMBAT_MEAN_ONLY.
                         Values: auto, TRUE, FALSE
                         Default: auto
-
-                        Note: waveica_v1 uses real batch labels directly rather than injection
-                        order as a proxy for batch structure, which may make it a better fit
-                        when batch labels are known and reliable (see waveica_v1 in the
-                        correction-methods list below). Defaults above are the package's own
-                        defaults, not tuned for this pipeline specifically.
 
   NORMALIZATION         Post-correction normalisation method. Uses pooled QC samples as
                         reference when available, otherwise median of biological samples.
@@ -418,75 +517,47 @@ MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50")
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
-# Correction methods:
-#   "none"                — imputation only (no correction; baseline)
-#   "notame"              — per-batch cubic spline drift correction + RUV batch correction
-#   "pmp_qcrsc"           — QC-RSC spline drift correction (pmp package)
-#   "pmp_qcrsc_scale"         — QC-RSC drift correction (pmp) + global median scaling for any
-#                               batch with <4 QCs; leaves pmp-corrected batches untouched
-#   "pmp_qcrsc_feature_scale" — as pmp_qcrsc_scale but uses per-feature median scaling for
-#                               no-QC batches, consistent with pmp's own feature-wise alignment
-#   "serrf"               — SERRF random forest correction (Fan et al. 2019)
-#   "batchcorr"           — cluster-based spline drift + between-batch normalisation (Brunius et al.)
-#   "combat_only"         — ComBat batch correction only (no drift correction)
-#   "loess_combat"        — per-batch LOESS drift correction (QC-based) + ComBat batch correction
-#   "loess_samples_combat" — per-batch LOESS drift correction (QC-based if enough QC, else a
-#                            QC-free trial on samples kept only if it improves the ltQC/Sample
-#                            D-ratio, else uncorrected — see LOESS_MIN_QC_PER_BATCH,
-#                            LOESS_MIN_LTQC_VALIDATE) + ComBat
-#   "auto_combat"         — per-batch drift correction auto-selected from several LOESS spans,
-#                            several Huber (MASS::rlm) k values, and a flat/no-op baseline, via
-#                            leave-one-out CV on QC or held-out ltQC/Sample D-ratio (see
-#                            AUTO_LOESS_SPANS, AUTO_HUBER_KS, AUTO_MIN_QC_PER_BATCH,
-#                            AUTO_MIN_LTQC_VALIDATE) + ComBat. New/experimental — see whether it
-#                            outperforms the fixed-method loess_* variants before relying on it.
-#   "huber_combat"        — per-batch Huber robust regression drift correction (QC-based, fixed
-#                            k = HUBER_K, not auto-searched) + ComBat batch correction
-#   "huber_samples_combat" — Huber equivalent of loess_samples_combat: QC-based (HUBER_K) if
-#                            enough QC, else a QC-free trial on samples (HUBER_SAMPLE_K) kept
-#                            only if it improves the ltQC/Sample D-ratio, else uncorrected + ComBat
-#   "loess_samples_sva"   — same per-batch drift correction as loess_samples_combat, but SVA
-#                            (Surrogate Variable Analysis) instead of ComBat for the between-batch
-#                            step: known Batch + n_sv latent surrogate variables (see SVA_N_SV) are
-#                            regressed out together via limma::removeBatchEffect(). Can catch
-#                            systematic technical structure Batch alone doesn't fully explain, at
-#                            the cost of being less interpretable than ComBat's simple batch shift.
-#   "huber_samples_sva"   — same per-batch drift correction as huber_samples_combat, with SVA
-#                            instead of ComBat for the between-batch step (see loess_samples_sva)
-#   "loess_limma"         — per-batch LOESS drift correction (QC-based) + limma removeBatchEffect
-#   "loess_samples_limma" — same per-batch QC-based/QC-free-trial/uncorrected choice as
-#                            loess_samples_combat + limma removeBatchEffect
-#   "cordbat_only"        — CordBat batch correction only (GGM-based, no drift correction)
-#   "loess_cordbat"       — per-batch QC-free LOESS drift correction (fit on samples, always —
-#                            CordBat's own between-batch step is also QC-free, fit on samples)
-#                            + CordBat batch correction
-#   "waveica"             — WaveICA 2.0 wavelet-based correction (injection order as a proxy
-#                            for batch structure, no batch labels used)
-#   "waveica_v1"          — original WaveICA wavelet-based correction, using real batch labels
-#                            directly instead of an injection-order proxy
-CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none,notame"), ",")[[1]]
+# Correction methods: each CORRECTION_METHODS entry is a "drift:basis:batch"
+# spec, not one opaque name per combination -- see the --help text above
+# (searchable: "DRIFT_METHOD (1st field)") for the full vocabulary and
+# legality rules, and R/method_spec.R for where that vocabulary is defined.
+CORRECTION_METHODS <- strsplit(get_env("CORRECTION_METHODS", "none:none:none,notame_spline:qc:ruv_s"), ",")[[1]]
 
 RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
-LOESS_SPAN                <- as.numeric(get_env("LOESS_SPAN", "0.75"))
+LOESS_QC_SPAN             <- as.numeric(get_env("LOESS_QC_SPAN", "0.75"))
 LOESS_SAMPLE_SPAN         <- as.numeric(get_env("LOESS_SAMPLE_SPAN", "0.9"))
-LOESS_SAMPLE_MIN_OBS      <- as.integer(get_env("LOESS_SAMPLE_MIN_OBS", "10"))
-LOESS_MIN_QC_PER_BATCH    <- as.integer(get_env("LOESS_MIN_QC_PER_BATCH", "4"))
-LOESS_MIN_LTQC_VALIDATE   <- as.integer(get_env("LOESS_MIN_LTQC_VALIDATE", "3"))
-LOESS_VALIDATE_SAMPLES_CORRECTION <- as.logical(get_env("LOESS_VALIDATE_SAMPLES_CORRECTION", "TRUE"))
+DRIFT_SAMPLE_MIN_OBS      <- as.integer(get_env("DRIFT_SAMPLE_MIN_OBS", "10"))
+DRIFT_MIN_QC_PER_BATCH    <- as.integer(get_env("DRIFT_MIN_QC_PER_BATCH", "4"))
+DRIFT_MIN_LTQC_VALIDATE   <- as.integer(get_env("DRIFT_MIN_LTQC_VALIDATE", "3"))
+DRIFT_HYBRID_VALIDATE     <- as.logical(get_env("DRIFT_HYBRID_VALIDATE", "TRUE"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
-WAVEICA_ALPHA   <- as.numeric(get_env("WAVEICA_ALPHA",  "0.05"))
-WAVEICA_CUTOFF  <- as.numeric(get_env("WAVEICA_CUTOFF", "0.10"))
-waveica_k_env   <- get_env("WAVEICA_K", "")
-WAVEICA_K       <- if (waveica_k_env == "") NULL else as.integer(waveica_k_env)
-WAVEICA_WF      <- get_env("WAVEICA_WF", "haar")
+parse_num_list <- function(s) as.numeric(strsplit(s, ",")[[1]])
+# WAVEICA_ALPHA/WAVEICA_CUTOFF: comma-separated lists -- a single value keeps
+# today's fixed behaviour (one WaveICA_2.0() call); more than one candidate
+# overall (across alpha/cutoff/K together) triggers a search, evaluated
+# against WAVEICA_EVAL_GROUP/Sample D-ratio (see select_waveica_params() in
+# R/correction_methods.R).
+WAVEICA_ALPHA   <- parse_num_list(get_env("WAVEICA_ALPHA",  "0.05"))
+WAVEICA_CUTOFF  <- parse_num_list(get_env("WAVEICA_CUTOFF", "0.10"))
+# WAVEICA_K: same list convention, but "auto" (or an empty token) means
+# "2 x n_batches", represented internally as NA -- resolved at call time
+# since it depends on the data, not at parse time.
+parse_waveica_k_list <- function(s) {
+  vapply(strsplit(s, ",")[[1]], function(tok) {
+    tok <- trimws(tok)
+    if (tok == "" || tolower(tok) == "auto") NA_real_ else as.numeric(tok)
+  }, numeric(1), USE.NAMES = FALSE)
+}
+WAVEICA_K          <- parse_waveica_k_list(get_env("WAVEICA_K", "auto"))
+WAVEICA_WF         <- get_env("WAVEICA_WF", "haar")
+WAVEICA_EVAL_GROUP <- get_env("WAVEICA_EVAL_GROUP", "ltQC")
 WAVEICA_V1_WF     <- get_env("WAVEICA_V1_WF", "haar")
 WAVEICA_V1_K      <- as.integer(get_env("WAVEICA_V1_K", "20"))
 WAVEICA_V1_T      <- as.numeric(get_env("WAVEICA_V1_T", "0.05"))
 WAVEICA_V1_T2     <- as.numeric(get_env("WAVEICA_V1_T2", "0.05"))
 WAVEICA_V1_ALPHA  <- as.numeric(get_env("WAVEICA_V1_ALPHA", "0"))
-parse_num_list <- function(s) as.numeric(strsplit(s, ",")[[1]])
 AUTO_LOESS_SPANS        <- parse_num_list(get_env("AUTO_LOESS_SPANS",        "0.5,0.75,0.9"))
 AUTO_HUBER_KS           <- parse_num_list(get_env("AUTO_HUBER_KS",           "1.0,1.345,2.0"))
 AUTO_SAMPLE_LOESS_SPANS <- parse_num_list(get_env("AUTO_SAMPLE_LOESS_SPANS", "0.3,0.6,0.9"))
@@ -494,10 +565,12 @@ AUTO_SAMPLE_HUBER_KS    <- parse_num_list(get_env("AUTO_SAMPLE_HUBER_KS",    "1.
 AUTO_MIN_QC_PER_BATCH   <- as.integer(get_env("AUTO_MIN_QC_PER_BATCH",  "4"))
 AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "3"))
 AUTO_MIN_CV_OBS         <- as.integer(get_env("AUTO_MIN_CV_OBS",       "4"))
-HUBER_K        <- as.numeric(get_env("HUBER_K",        "1.345"))
+HUBER_QC_K     <- as.numeric(get_env("HUBER_QC_K",     "1.345"))
 HUBER_SAMPLE_K <- as.numeric(get_env("HUBER_SAMPLE_K", "1.345"))
 sva_n_sv_env <- get_env("SVA_N_SV", "")
 SVA_N_SV     <- if (sva_n_sv_env == "") NULL else as.integer(sva_n_sv_env)
+LOESS_QC_CV_SPANS <- parse_num_list(get_env("LOESS_QC_CV_SPANS", ""))
+HUBER_QC_CV_KS    <- parse_num_list(get_env("HUBER_QC_CV_KS",    ""))
 COMBAT_MEAN_ONLY <- get_env("COMBAT_MEAN_ONLY", "auto")
 COMBAT_PAR_PRIOR <- get_env("COMBAT_PAR_PRIOR", "auto")
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
@@ -516,18 +589,19 @@ run_preflight_checks(
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
-  rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_span = LOESS_SPAN,
-  loess_sample_span = LOESS_SAMPLE_SPAN, loess_sample_min_obs = LOESS_SAMPLE_MIN_OBS,
-  loess_min_qc_per_batch = LOESS_MIN_QC_PER_BATCH,
-  loess_min_ltqc_validate = LOESS_MIN_LTQC_VALIDATE,
+  rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_qc_span = LOESS_QC_SPAN,
+  loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
+  drift_min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH,
+  drift_min_ltqc_validate = DRIFT_MIN_LTQC_VALIDATE,
   auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS,
   auto_sample_loess_spans = AUTO_SAMPLE_LOESS_SPANS, auto_sample_huber_ks = AUTO_SAMPLE_HUBER_KS,
   auto_min_qc_per_batch = AUTO_MIN_QC_PER_BATCH, auto_min_ltqc_validate = AUTO_MIN_LTQC_VALIDATE,
   auto_min_cv_obs = AUTO_MIN_CV_OBS,
-  huber_k = HUBER_K, huber_sample_k = HUBER_SAMPLE_K,
+  huber_qc_k = HUBER_QC_K, huber_sample_k = HUBER_SAMPLE_K,
   sva_n_sv = if (is.null(SVA_N_SV)) NA_integer_ else SVA_N_SV,
-  waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF,
-  waveica_k = if (is.null(WAVEICA_K)) NA_integer_ else WAVEICA_K,
+  loess_qc_cv_spans = LOESS_QC_CV_SPANS, huber_qc_cv_ks = HUBER_QC_CV_KS,
+  waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF, waveica_k = WAVEICA_K,
+  waveica_eval_group = WAVEICA_EVAL_GROUP,
   waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
   waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
   combat_mean_only = COMBAT_MEAN_ONLY, combat_par_prior = COMBAT_PAR_PRIOR,
@@ -771,9 +845,9 @@ run_params <- list(
   "RSD_THRESHOLD"           = RSD_THRESHOLD,
   "RUV_K"                   = RUV_K,
   "SERRF_NUM"               = SERRF_NUM,
-  "LOESS_SPAN"              = LOESS_SPAN,
+  "LOESS_QC_SPAN"           = LOESS_QC_SPAN,
   "LOESS_SAMPLE_SPAN"       = LOESS_SAMPLE_SPAN,
-  "LOESS_SAMPLE_MIN_OBS"    = LOESS_SAMPLE_MIN_OBS,
+  "DRIFT_SAMPLE_MIN_OBS"    = DRIFT_SAMPLE_MIN_OBS,
   "CORDBAT_REF_BATCH"       = if (is.null(CORDBAT_REF_BATCH)) "(auto)" else CORDBAT_REF_BATCH,
   "NORMALIZATION"           = NORMALIZATION,
   "N_CORES"                 = if (n_cores_env == "") paste(parallel::detectCores() - 1, "(auto)") else n_cores_env
@@ -838,77 +912,52 @@ write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.c
 
 run_log <- new_run_log()
 
+# Single shared params list read by run_correction()'s drift/batch dispatch
+# (R/correction_methods.R) for every CORRECTION_METHODS entry. serrf_num_eff
+# (SERRF_NUM capped at half the smallest per-batch QC count, to avoid
+# overfitting) is computed once here from `data`, same value every
+# batch_method=serrf run would have computed inline before.
+serrf_min_qc_per_batch <- if (any(colData(data)$QC == "QC"))
+  min(table(colData(data)$Batch[colData(data)$QC == "QC"])) else 0L
+serrf_num_eff <- max(1L, min(SERRF_NUM, floor(serrf_min_qc_per_batch / 2L)))
+if (serrf_num_eff < SERRF_NUM)
+  message("==> SERRF: reducing num from ", SERRF_NUM, " to ", serrf_num_eff,
+          " (min QC per batch = ", serrf_min_qc_per_batch, ")")
+
+params <- list(
+  loess_qc_span = LOESS_QC_SPAN, loess_sample_span = LOESS_SAMPLE_SPAN,
+  huber_qc_k = HUBER_QC_K, huber_sample_k = HUBER_SAMPLE_K,
+  drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
+  min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH, min_ltqc_validate = DRIFT_MIN_LTQC_VALIDATE,
+  drift_hybrid_validate = DRIFT_HYBRID_VALIDATE,
+  loess_qc_cv_spans = LOESS_QC_CV_SPANS, huber_qc_cv_ks = HUBER_QC_CV_KS,
+  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS,
+  auto_sample_loess_spans = AUTO_SAMPLE_LOESS_SPANS, auto_sample_huber_ks = AUTO_SAMPLE_HUBER_KS,
+  auto_min_qc_per_batch = AUTO_MIN_QC_PER_BATCH, auto_min_ltqc_validate = AUTO_MIN_LTQC_VALIDATE,
+  auto_min_cv_obs = AUTO_MIN_CV_OBS,
+  combat_mean_only = COMBAT_MEAN_ONLY, combat_par_prior = COMBAT_PAR_PRIOR, sva_n_sv = SVA_N_SV,
+  ruv_k = RUV_K, cordbat_ref_batch = CORDBAT_REF_BATCH,
+  waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF, waveica_k = WAVEICA_K, waveica_wf = WAVEICA_WF,
+  waveica_eval_group = WAVEICA_EVAL_GROUP,
+  waveica_v1_wf = WAVEICA_V1_WF, waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
+  waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
+  serrf_num_eff = serrf_num_eff
+)
+
 for (method in CORRECTION_METHODS) {
   message("\n############################################################")
   message("# METHOD: ", toupper(method))
   message("############################################################")
 
-  method_out   <- file.path(output_dir, method)
+  method_out   <- file.path(output_dir, sanitize_method_id(method))
   method_start <- Sys.time()
   dir.create(file.path(method_out, "QC_plots"), showWarnings = FALSE, recursive = TRUE)
 
   result <- tryCatch({
-    switch(method,
-      none         = correct_none(data),
-      notame       = correct_notame(data, RUV_K),
-      pmp_qcrsc         = correct_pmp_qcrsc(data),
-      pmp_qcrsc_scale         = correct_pmp_qcrsc_scale(data),
-      pmp_qcrsc_feature_scale = correct_pmp_qcrsc_feature_scale(data),
-      serrf        = {
-        # Cap SERRF_NUM at half the smallest per-batch QC count to avoid overfitting
-        min_qc_per_batch <- min(table(colData(data)$Batch[colData(data)$QC == "QC"]))
-        serrf_num_eff    <- max(1L, min(SERRF_NUM, floor(min_qc_per_batch / 2L)))
-        if (serrf_num_eff < SERRF_NUM)
-          message("==> SERRF: reducing num from ", SERRF_NUM, " to ", serrf_num_eff,
-                  " (min QC per batch = ", min_qc_per_batch, ")")
-        correct_serrf(data, num = serrf_num_eff)
-      },
-      batchcorr    = correct_batchcorr(data),
-      combat_only  = correct_combat_only(data, COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      loess_combat        = correct_loess_combat(data, LOESS_SPAN, COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      loess_samples_combat = correct_loess_samples_combat(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
-                                                           LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
-                                                           LOESS_MIN_LTQC_VALIDATE,
-                                                           LOESS_VALIDATE_SAMPLES_CORRECTION,
-                                                           COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      auto_combat = correct_auto_combat(data, AUTO_LOESS_SPANS, AUTO_HUBER_KS,
-                                         AUTO_SAMPLE_LOESS_SPANS, AUTO_SAMPLE_HUBER_KS,
-                                         AUTO_MIN_QC_PER_BATCH, AUTO_MIN_LTQC_VALIDATE,
-                                         AUTO_MIN_CV_OBS,
-                                         COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      huber_combat        = correct_huber_combat(data, HUBER_K, COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      huber_samples_combat = correct_huber_samples_combat(data, HUBER_K, HUBER_SAMPLE_K,
-                                                           LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
-                                                           LOESS_MIN_LTQC_VALIDATE,
-                                                           LOESS_VALIDATE_SAMPLES_CORRECTION,
-                                                           COMBAT_MEAN_ONLY, COMBAT_PAR_PRIOR),
-      loess_samples_sva = correct_loess_samples_sva(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
-                                                     LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
-                                                     LOESS_MIN_LTQC_VALIDATE,
-                                                     LOESS_VALIDATE_SAMPLES_CORRECTION,
-                                                     SVA_N_SV),
-      huber_samples_sva = correct_huber_samples_sva(data, HUBER_K, HUBER_SAMPLE_K,
-                                                     LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
-                                                     LOESS_MIN_LTQC_VALIDATE,
-                                                     LOESS_VALIDATE_SAMPLES_CORRECTION,
-                                                     SVA_N_SV),
-      loess_limma   = correct_loess_limma(data, LOESS_SPAN),
-      loess_samples_limma = correct_loess_samples_limma(data, LOESS_SPAN, LOESS_SAMPLE_SPAN,
-                                                          LOESS_SAMPLE_MIN_OBS, LOESS_MIN_QC_PER_BATCH,
-                                                          LOESS_MIN_LTQC_VALIDATE,
-                                                          LOESS_VALIDATE_SAMPLES_CORRECTION),
-      loess_feature_median = correct_loess_feature_median(data, LOESS_SPAN),
-      loess_global_median  = correct_loess_global_median(data, LOESS_SPAN),
-      cordbat_only  = correct_cordbat_only(data, CORDBAT_REF_BATCH),
-      loess_cordbat = correct_loess_cordbat(data, LOESS_SAMPLE_SPAN, LOESS_SAMPLE_MIN_OBS,
-                                             CORDBAT_REF_BATCH),
-      waveica      = correct_waveica(data, alpha = WAVEICA_ALPHA, cutoff = WAVEICA_CUTOFF,
-                                      K = WAVEICA_K, wf = WAVEICA_WF),
-      waveica_v1   = correct_waveica_v1(data, wf = WAVEICA_V1_WF, K = WAVEICA_V1_K,
-                                         t = WAVEICA_V1_T, t2 = WAVEICA_V1_T2,
-                                         alpha = WAVEICA_V1_ALPHA),
-      stop("Unknown method '", method, "'. Valid: none, notame, pmp_qcrsc, pmp_qcrsc_scale, pmp_qcrsc_feature_scale, serrf, batchcorr, combat_only, loess_combat, loess_samples_combat, huber_combat, huber_samples_combat, loess_samples_sva, huber_samples_sva, auto_combat, loess_limma, loess_samples_limma, loess_feature_median, loess_global_median, cordbat_only, loess_cordbat, waveica, waveica_v1")
-    )
+    spec <- parse_correction_method_spec(method)
+    if (!is.list(spec)) stop(spec)  # already preflight-checked; re-validated here defensively
+    run_correction(data, drift_method = spec$drift, basis = spec$basis,
+                   batch_method = spec$batch, params = params)
   }, error = function(e) {
     message("ERROR in method '", method, "': ", conditionMessage(e))
     message("Skipping.")

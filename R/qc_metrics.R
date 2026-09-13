@@ -228,21 +228,27 @@ eval_ltqc <- function(se, min_det_frac = 0.5, mask = NULL) {
 }
 
 
-# Compute MAD(ltQC) / MAD(Sample) per feature
+# Compute MAD(reference_group) / MAD(Sample) per feature. reference_group
+# defaults to "ltQC" (the unbiased choice used everywhere else in this
+# pipeline, since ltQC is never used to fit any correction method) but can be
+# set to "QC" instead -- legitimate specifically for evaluating a method that
+# also never fits on QC (e.g. WaveICA2.0, which fits only on injection order),
+# where QC is just as much a genuine held-out reference as ltQC, and often
+# has more samples to draw on.
 # min_det_frac: minimum fraction of originally-detected values required in BOTH
-# ltQC and sample groups to include a feature (uses pre-imputation mask when
-# available to avoid artefacts from imputed values).
+# the reference group and sample group to include a feature (uses
+# pre-imputation mask when available to avoid artefacts from imputed values).
 # Returns median across all features passing the detection filter, or NA.
-eval_ltqc_dratio <- function(se, min_det_frac = 0.5, mask = NULL) {
-  ltqc_idx   <- which(colData(se)$QC == "ltQC")
+eval_ltqc_dratio <- function(se, min_det_frac = 0.5, mask = NULL, reference_group = "ltQC") {
+  ref_idx    <- which(colData(se)$QC == reference_group)
   sample_idx <- which(colData(se)$QC == "Sample")
-  if (length(ltqc_idx) < 2 || length(sample_idx) < 2) return(NA_real_)
+  if (length(ref_idx) < 2 || length(sample_idx) < 2) return(NA_real_)
   mat      <- assay(se, 1)
   has_mask <- !is.null(mask)
   dratio_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
-    lt <- mat[i, ltqc_idx]
+    lt <- mat[i, ref_idx]
     sm <- mat[i, sample_idx]
-    ok_lt <- if (has_mask) mask[i, ltqc_idx]   else is.finite(lt)
+    ok_lt <- if (has_mask) mask[i, ref_idx]    else is.finite(lt)
     ok_sm <- if (has_mask) mask[i, sample_idx] else is.finite(sm)
     if (mean(ok_lt) < min_det_frac || mean(ok_sm) < min_det_frac) return(NA_real_)
     if (sum(ok_lt) < 2 || sum(ok_sm) < 2) return(NA_real_)
@@ -537,7 +543,12 @@ eval_qc_homogeneity <- function(se, group = "QC") {
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
 
-  write.csv(rd, file.path(interdir, paste0("qc_metrics_", method, ".csv")), row.names = TRUE)
+  # method may contain colons (a "drift:basis:batch" spec) -- fine as a data
+  # value (method column below, printed labels), but not as part of a
+  # filename, so filenames use the sanitized form while the column/label
+  # keeps the original, more readable spec string.
+  method_id <- sanitize_method_id(method)
+  write.csv(rd, file.path(interdir, paste0("qc_metrics_", method_id, ".csv")), row.names = TRUE)
 
   rsd  <- rd$RSD_r[!is.na(rd$RSD_r)]
   drat <- rd$D_ratio_r[!is.na(rd$D_ratio_r)]
@@ -583,7 +594,7 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
   summary_row$ltqc_permanova_p  <- ltqc_homo$permanova_p
   summary_row$ltqc_permdisp_p   <- ltqc_homo$permdisp_p
 
-  write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method, ".csv")), row.names = FALSE)
+  write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method_id, ".csv")), row.names = FALSE)
 
   cat("\n--- QC summary:", method, "---\n")
   print(summary_row, row.names = FALSE)

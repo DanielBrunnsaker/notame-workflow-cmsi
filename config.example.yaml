@@ -14,7 +14,7 @@ COLUMN: RP
 POLARITY: POS
 
 # ── Common optional overrides (all have defaults — see README) ────────────
-CORRECTION_METHODS: pmp_qcrsc,notame
+CORRECTION_METHODS: none:none:pmp_qcrsc,notame_spline:qc:ruv_s
 QC_DETECTION_LIMIT: 0.60
 SAMPLE_DETECTION_LIMIT: 0.20
 RSD_THRESHOLD: 0.30
