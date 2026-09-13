@@ -890,11 +890,15 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NA_real_, wf 
 # available.
 #
 # Note: this function's `alpha` (0-1, trade-off between sample-wise and
-# variable-wise independence in the ICA step) is unrelated to
-# correct_waveica()'s `alpha` (0-1, significance threshold for flagging a
-# component as injection-order-associated) -- same parameter name in both
-# packages, different meaning. Kept as WAVEICA_V1_ALPHA (distinct from
-# WAVEICA_ALPHA) in notame-workflow.r specifically to avoid conflating them.
+# variable-wise independence in the ICA step) turns out to be the same KIND
+# of parameter as WaveICA2.0's own `alpha` (see select_waveica_params()'s
+# documentation -- both packages' alpha is an ICA spatial/temporal
+# independence trade-off, not a significance/flagging threshold; an earlier
+# version of this comment claimed they were unrelated, which was wrong, based
+# on a mis-reading of WaveICA2.0's own parameter that has since been
+# corrected against its actual source). Still kept as WAVEICA_V1_ALPHA
+# (distinct from WAVEICA_ALPHA) in notame-workflow.r since they're separate
+# packages with separately-tuned defaults, not because the concept differs.
 correct_waveica_v1 <- function(data, wf = "haar", K = 20, t = 0.05, t2 = 0.05, alpha = 0) {
   suppressPackageStartupMessages(library(WaveICA))
 

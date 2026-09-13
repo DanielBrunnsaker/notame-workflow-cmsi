@@ -337,20 +337,25 @@ if both are set for the same parameter.
                         lowest median feature RSD.
                         Default: (auto)
 
-  WAVEICA_ALPHA         Comma-separated significance threshold(s) batch_method=waveica (WaveICA2.0)
-                        uses to decide whether an independent component is injection-order-related
-                        and should be removed. Lower = stricter (fewer components flagged, less
-                        aggressive correction); higher = more components flagged and removed. A
-                        single value keeps that value fixed (one WaveICA_2.0() call); more than one
-                        value overall across WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K triggers a
-                        search over the full cross-product grid -- see WAVEICA_EVAL_GROUP below.
+  WAVEICA_ALPHA         Comma-separated trade-off value(s) (0-1) for WaveICA2.0's internal ICA step
+                        (unbiased_stICA()): 0 = spatial ICA, 1 = temporal ICA, balancing
+                        independence across samples vs. across features in the decomposition. NOT
+                        a significance/flagging threshold and does not itself control how many
+                        components get removed -- see WAVEICA_CUTOFF for that. A single value keeps
+                        that value fixed (one WaveICA_2.0() call); more than one value overall
+                        across WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K triggers a search over the
+                        full cross-product grid -- see WAVEICA_EVAL_GROUP below.
                         Default: 0.05
 
-  WAVEICA_CUTOFF        Comma-separated threshold(s) (0-1) for how much of a wavelet-decomposed
-                        level's variance must be associated with injection order before that level
-                        is considered technical and passed to ICA for cleanup. Lower = more levels
-                        get corrected (more aggressive); higher = fewer, more conservative. Same
-                        single-value-fixed / multi-value-searched convention as WAVEICA_ALPHA.
+  WAVEICA_CUTOFF        Comma-separated threshold(s) (0-1): the minimum R² (against injection
+                        order, via a GAM fit) an individual ICA component must reach to be treated
+                        as injection-order-technical and subtracted out. This is the actual
+                        'how aggressive' dial -- every wavelet decomposition level is always
+                        ICA-decomposed regardless of this setting; Cutoff decides which of the
+                        resulting *components* (not which levels) get removed. Lower = more
+                        components qualify as technical (more removed, more aggressive); higher =
+                        fewer qualify (more conservative). Same single-value-fixed /
+                        multi-value-searched convention as WAVEICA_ALPHA.
                         Default: 0.10
 
   WAVEICA_K             Comma-separated number(s) of independent components batch_method=waveica
