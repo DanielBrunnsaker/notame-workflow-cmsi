@@ -324,27 +324,32 @@ detect_qc_outliers <- function(data, group, min_n = 4, mad_k = 5, n_pcs = 5) {
   mat_imp <- assay(lod2_impute(data), 1)  # local imputation, just for this diagnostic
   batches <- unique(cd$Batch)
   flagged <- integer(0)
+  skipped <- character(0)  # batches skipped for insufficient/degenerate data, with reason
 
   for (b in batches) {
     idx <- which(cd$Batch == b & cd$QC == group)
-    if (length(idx) < min_n) next
+    if (length(idx) == 0) next  # group not present in this batch at all -- not worth reporting
+    if (length(idx) < min_n) {
+      skipped <- c(skipped, paste0(b, " (", length(idx), " < ", min_n, ")"))
+      next
+    }
 
     sub      <- t(mat_imp[, idx, drop = FALSE])  # samples x features
     feat_var <- apply(sub, 2, var)
     sub      <- sub[, !is.na(feat_var) & feat_var > 0, drop = FALSE]
-    if (ncol(sub) < 2) next
+    if (ncol(sub) < 2) { skipped <- c(skipped, paste0(b, " (no variable features)")); next }
 
     n_pcs_use <- min(n_pcs, nrow(sub) - 1, ncol(sub))
     pca <- tryCatch(prcomp(sub, center = TRUE, scale. = TRUE, rank. = n_pcs_use),
                      error = function(e) NULL)
-    if (is.null(pca)) next
+    if (is.null(pca)) { skipped <- c(skipped, paste0(b, " (PCA failed)")); next }
 
     scores   <- pca$x
     centroid <- apply(scores, 2, median)
     dists    <- sqrt(rowSums(sweep(scores, 2, centroid)^2))
 
     mad_dist <- mad(dists)
-    if (mad_dist == 0) next  # every point equidistant from centroid -- nothing to flag
+    if (mad_dist == 0) next  # every point equidistant from centroid -- nothing to flag, not a skip
     thresh <- median(dists) + mad_k * mad_dist
     bad    <- idx[dists > thresh]
 
@@ -355,6 +360,10 @@ detect_qc_outliers <- function(data, group, min_n = 4, mad_k = 5, n_pcs = 5) {
       flagged <- c(flagged, bad)
     }
   }
+
+  message("  ", group, " outlier check: ", length(flagged), " flagged",
+          if (length(skipped) > 0) paste0("; skipped ", length(skipped), " batch(es) -- ",
+                                           paste(skipped, collapse = ", ")) else "")
 
   flagged
 }
