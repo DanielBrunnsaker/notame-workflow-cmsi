@@ -317,9 +317,18 @@ eval_dist_ratio <- function(se, group1 = "ltQC", group2 = "Sample", n_pcs = 20) 
 # robust (MAD-based, not SD-based) outlier rule, consistent with this
 # pipeline's general preference for MAD/median over mean/SD given how
 # outlier-prone metabolomics intensity data is. Batches with fewer than
-# min_n samples of this group are skipped (not enough points for a
-# meaningful PCA-space distance check).
-detect_qc_outliers <- function(data, group, min_n = 4, mad_k = 5, n_pcs = 5) {
+# min_n samples of this group are skipped.
+#
+# min_n's practical floor is 3, not lower: with 3 points, PCA correctly caps
+# at 2 dimensions (n-1) and MAD of 3 distances is well-defined, if a crude
+# spread estimate -- weak power, but not meaningless. At 2 points there's no
+# third reference to establish what "typical spread" looks like at all, so
+# neither could ever be meaningfully called the outlier. ltQC groups in
+# particular are often exactly 3 per batch by design (one long-term QC
+# injected a few times per batch, not throughout it like regular QC) --
+# min_n=3 is the default specifically so that case still gets checked rather
+# than silently skipped every time.
+detect_qc_outliers <- function(data, group, min_n = 3, mad_k = 5, n_pcs = 5) {
   cd      <- as.data.frame(colData(data))
   mat_imp <- assay(lod2_impute(data), 1)  # local imputation, just for this diagnostic
   batches <- unique(cd$Batch)

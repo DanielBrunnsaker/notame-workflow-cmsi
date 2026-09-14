@@ -93,7 +93,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   qc_detection_limit, sample_detection_limit,
                                   low_int_filter_frac, low_int_percentile,
                                   min_qc_sample_detection, min_batch_detection,
-                                  min_batch_detection_frac, qc_outlier_mad_k,
+                                  min_batch_detection_frac, qc_outlier_mad_k, qc_outlier_min_n,
                                   rsd_threshold, ruv_k, serrf_num, loess_qc_span,
                                   loess_sample_span, drift_sample_min_obs,
                                   drift_min_qc_per_batch, drift_min_ltqc_validate,
@@ -191,6 +191,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "LOW_INT_PERCENTILE",      low_int_percentile,      min = 0, max = 1)
   problems <- check_numeric(problems, "MIN_QC_SAMPLE_DETECTION", min_qc_sample_detection, min = 0, max = 1)
   problems <- check_numeric(problems, "QC_OUTLIER_MAD_K", qc_outlier_mad_k, min = 0)
+  problems <- check_numeric(problems, "QC_OUTLIER_MIN_N", qc_outlier_min_n, min = 1)
   problems <- check_numeric(problems, "RSD_THRESHOLD",           rsd_threshold,           min = 0)
   problems <- check_numeric(problems, "LOESS_QC_SPAN",           loess_qc_span,           min = 0, max = 1)
   problems <- check_numeric(problems, "LOESS_SAMPLE_SPAN",       loess_sample_span,       min = 0, max = 1)

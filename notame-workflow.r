@@ -183,9 +183,23 @@ if both are set for the same parameter.
                         (in PCA score space, top 5 PCs, unit-variance scaled) from its batch
                         group's median score exceeds median(distances) + K * mad(distances).
                         Lower K = more aggressive (flags more samples); higher K = more
-                        conservative. Batches with fewer than 4 samples of a group are skipped
-                        (not enough points for a meaningful check). Set to 0 to disable.
+                        conservative. Batches with fewer than QC_OUTLIER_MIN_N samples of a
+                        group are skipped (not enough points for a meaningful check). Set to 0
+                        to disable.
                         Default: 5
+
+  QC_OUTLIER_MIN_N      Minimum samples of a group (QC or ltQC) a batch must have for
+                        QC_OUTLIER_MAD_K's check to run there at all; batches below this are
+                        skipped for that group. 3 is the practical floor, not lower -- PCA
+                        correctly caps at 2 dimensions with 3 points and MAD of 3 distances is
+                        still well-defined (weak power, not meaningless), but with only 2
+                        points there's no third reference to judge 'typical spread' against, so
+                        neither could ever be meaningfully called the outlier. Default is 3
+                        rather than a more conventional floor like 4-5 specifically because
+                        ltQC groups are often exactly 3 per batch by design (a long-term QC
+                        injected a few times per batch, not throughout it) -- a higher default
+                        would silently skip ltQC's check in every batch for a setup like that.
+                        Default: 3
 
   MIN_BATCH_DETECTION   Minimum number of detections a feature must have in every batch.
                         Features absent from any entire batch are removed — they have no
@@ -572,6 +586,7 @@ qc_rsd_env    <- get_env("QC_RSD_FILTER", "none")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
 QC_OUTLIER_MAD_K        <- as.numeric(get_env("QC_OUTLIER_MAD_K", "5"))
+QC_OUTLIER_MIN_N        <- as.integer(get_env("QC_OUTLIER_MIN_N", "3"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 MIN_BATCH_DETECTION_FRAC <- as.numeric(get_env("MIN_BATCH_DETECTION_FRAC", "0"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
@@ -650,6 +665,7 @@ run_preflight_checks(
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
   min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC, qc_outlier_mad_k = QC_OUTLIER_MAD_K,
+  qc_outlier_min_n = QC_OUTLIER_MIN_N,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_qc_span = LOESS_QC_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
   drift_min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH,
@@ -802,7 +818,8 @@ for (qc_group in c("QC", "ltQC")) {
 # column). QC and ltQC checked separately (see detect_qc_outliers()).
 if (QC_OUTLIER_MAD_K > 0) {
   for (qc_group in c("QC", "ltQC")) {
-    outlier_idx <- detect_qc_outliers(data, group = qc_group, mad_k = QC_OUTLIER_MAD_K)
+    outlier_idx <- detect_qc_outliers(data, group = qc_group, mad_k = QC_OUTLIER_MAD_K,
+                                       min_n = QC_OUTLIER_MIN_N)
     if (length(outlier_idx) > 0) data <- data[, -outlier_idx]
   }
 }
@@ -939,6 +956,7 @@ run_params <- list(
   "LOW_INT_CUTOFF"          = if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)",
   "MIN_QC_SAMPLE_DETECTION" = MIN_QC_SAMPLE_DETECTION,
   "QC_OUTLIER_MAD_K"        = QC_OUTLIER_MAD_K,
+  "QC_OUTLIER_MIN_N"        = QC_OUTLIER_MIN_N,
   "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
   "MIN_BATCH_DETECTION_FRAC" = MIN_BATCH_DETECTION_FRAC,
   "QC_RSD_FILTER"           = if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)",
