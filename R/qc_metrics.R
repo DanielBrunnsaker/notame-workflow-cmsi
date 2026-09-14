@@ -359,13 +359,18 @@ detect_qc_outliers <- function(data, group, min_n = 3, mad_k = 5, n_pcs = 5) {
 
     mad_dist <- mad(dists)
     if (mad_dist == 0) next  # every point equidistant from centroid -- nothing to flag, not a skip
-    thresh <- median(dists) + mad_k * mad_dist
-    bad    <- idx[dists > thresh]
+    med_dist <- median(dists)
+    thresh   <- med_dist + mad_k * mad_dist
+    bad_pos  <- which(dists > thresh)
+    bad      <- idx[bad_pos]
 
     if (length(bad) > 0) {
-      message("  Batch ", b, ": ", length(bad), " ", group, " outlier sample(s) ",
-              "(PCA distance > ", round(thresh, 2), "): ",
-              paste(cd$Sample_ID[bad], collapse = ", "))
+      for (j in bad_pos) {
+        mads_above <- (dists[j] - med_dist) / mad_dist
+        message("  Batch ", b, ": ", group, " outlier sample: ", cd$Sample_ID[idx[j]],
+                " (distance=", round(dists[j], 2), ", median=", round(med_dist, 2),
+                ", ", round(mads_above, 1), " MADs above median)")
+      }
       flagged <- c(flagged, bad)
     }
   }
