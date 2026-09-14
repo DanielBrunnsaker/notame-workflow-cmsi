@@ -238,7 +238,8 @@ limma_correct <- function(combined) {
 #   "complete" -- fn(combined, params) receives an already LoD/2-imputed SE and
 #                 returns a corrected SE; fn manages its own scale handling
 #                 internally (run_cordbat() already does its own clamp/log2/2^
-#                 back-transform; ruvs_qc() works directly on raw scale).
+#                 back-transform; ruvs_qc() and run_waveica_v1() work directly
+#                 on raw scale).
 #   "sparse"   -- fn(combined, params) receives the merged, NOT LoD/2-imputed,
 #                 SE directly and returns a corrected SE; fn does its own
 #                 NA-tolerant filtering. feature_median/global_median were
@@ -270,10 +271,10 @@ BATCH_METHOD_REGISTRY <- list(
   waveica    = list(kind = "atomic", fn = function(data, p)
     correct_waveica(data, alpha = p$waveica_alpha, cutoff = p$waveica_cutoff,
                      K = p$waveica_k, wf = p$waveica_wf, eval_group = p$waveica_eval_group)),
-  waveica_v1 = list(kind = "atomic", fn = function(data, p)
-    correct_waveica_v1(data, wf = p$waveica_v1_wf, K = p$waveica_v1_k, t = p$waveica_v1_t,
-                        t2 = p$waveica_v1_t2, alpha = p$waveica_v1_alpha,
-                        eval_group = p$waveica_v1_eval_group)),
+  waveica_v1 = list(kind = "complete", fn = function(se, p)
+    run_waveica_v1(se, wf = p$waveica_v1_wf, alpha_grid = p$waveica_v1_alpha,
+                    t_grid = p$waveica_v1_t, k_grid = p$waveica_v1_k, t2 = p$waveica_v1_t2,
+                    eval_group = p$waveica_v1_eval_group)),
   pmp_qcrsc = list(kind = "atomic", fn = function(data, p) correct_pmp_qcrsc(data)),
   serrf     = list(kind = "atomic", fn = function(data, p) correct_serrf(data, num = p$serrf_num_eff))
 )
@@ -743,15 +744,24 @@ run_cordbat <- function(combined, ref_batch) {
 # implicit default in this pipeline) -- resolved here, not by the caller.
 run_waveica_once <- function(data, alpha, cutoff, k, wf) {
   k_eff <- if (is.na(k)) length(unique(colData(data)$Batch)) * 2 else k
+  # WaveICA_2.0()'s modwt() decomposition operates on data[,j] in whatever
+  # row order it's given -- Injection_Order is only used afterward, for the
+  # GAM component test against already-decomposed coefficients (verified
+  # against source). Its own example code always pre-sorts by injection
+  # order before calling. This pipeline's assay column order is whatever
+  # MSDIAL exported, not guaranteed to be injection order -- so sort before
+  # calling and unsort the result back to the caller's original column order.
+  ord     <- order(colData(data)$Injection_order)
+  unorder <- order(ord)
   result <- WaveICA_2.0(
-    data            = t(assay(data, 1)),
+    data            = t(assay(data, 1))[ord, , drop = FALSE],
     wf              = wf,
-    Injection_Order = as.numeric(colData(data)$Injection_order),
+    Injection_Order = as.numeric(colData(data)$Injection_order)[ord],
     alpha           = alpha,
     Cutoff          = cutoff,
     K               = k_eff
   )
-  list(mat = t(result$data_wave), k_eff = k_eff)
+  list(mat = t(result$data_wave[unorder, , drop = FALSE]), k_eff = k_eff)
 }
 
 # Auto-selects WaveICA2.0's (alpha, Cutoff, K) from the cross-product of
@@ -933,17 +943,25 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NA_real_, wf 
 # here purely for grid-search parity) -- resolved here, not by the caller.
 run_waveica_v1_once <- function(data, alpha, t, k, t2, wf) {
   k_eff <- if (is.na(k)) length(unique(colData(data)$Batch)) * 2 else k
+  # Same data-ordering contract as WaveICA_2.0() (see run_waveica_once()'s
+  # comment) -- WaveICA()'s modwt() decomposition also assumes the input is
+  # already in injection-order sequence, with no internal reordering (its own
+  # example code pre-sorts before calling). Sort before calling, unsort the
+  # result back; `batch` must be permuted alongside `data` since normFact()'s
+  # test needs row-for-row correspondence between them.
+  ord     <- order(colData(data)$Injection_order)
+  unorder <- order(ord)
   result <- WaveICA(
-    data  = t(assay(data, 1)),
+    data  = t(assay(data, 1))[ord, , drop = FALSE],
     wf    = wf,
-    batch = as.character(colData(data)$Batch),
+    batch = as.character(colData(data)$Batch)[ord],
     group = NULL,
     K     = k_eff,
     t     = t,
     t2    = t2,
     alpha = alpha
   )
-  list(mat = t(result$data_wave), k_eff = k_eff)
+  list(mat = t(result$data_wave[unorder, , drop = FALSE]), k_eff = k_eff)
 }
 
 # Auto-selects WaveICA (v1)'s (alpha, t, K) from the cross-product of
@@ -1033,20 +1051,39 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
   results[[winner]]$mat
 }
 
-correct_waveica_v1 <- function(data, wf = "haar", K = 20, t = 0.05, t2 = 0.05, alpha = 0,
-                                eval_group = "ltQC") {
+# "complete"-kind entry point for batch_method=waveica_v1 (see
+# BATCH_METHOD_REGISTRY) -- takes the already drift-corrected, LoD/2-imputed
+# `combined` SE from run_correction() and returns a corrected SE; LoD/2
+# imputation and RF imputation are handled by run_correction() itself for
+# this kind, same contract as run_cordbat(). Unlike run_cordbat(), no
+# clamp/log2/2^ wrapping -- WaveICA (v1), like WaveICA2.0, operates directly
+# on raw intensity scale by design (see WaveICA.R upstream).
+#
+# waveica_v1 was originally classified "atomic" (forced drift=none) on the
+# same reasoning as WaveICA2.0 -- but unlike WaveICA2.0, WaveICA (v1) has no
+# mechanism of its own for injection-order/drift effects at all: its WaveICA()
+# signature doesn't take injection order, and its component-removal test
+# (normFact()'s categorical branch) is a one-way ANOVA on per-batch means,
+# structurally blind to a trend within a batch (confirmed against source, and
+# against a real run where remaining_drift_r was essentially unchanged after
+# correction while remaining_batch_r2 collapsed). So drift=none was silently
+# discarding real drift with no path to remove it. Reclassified to "complete"
+# (like cordbat) so a real drift step can run first -- e.g.
+# loess:hybrid:waveica_v1 -- while none:none:waveica_v1 keeps working exactly
+# as before (drift step is a no-op when drift_method="none").
+run_waveica_v1 <- function(combined, wf, alpha_grid, t_grid, k_grid, t2, eval_group) {
   suppressPackageStartupMessages(library(WaveICA))
 
-  obs_mask <- !is.na(assay(data, 1))
-  data     <- lod2_impute(data)
+  n_batches <- length(unique(colData(combined)$Batch))
+  if (n_batches < 2) {
+    message("==> Batch correction skipped (only one batch detected)")
+    return(combined)
+  }
 
   message("==> WaveICA (v1) correction")
-  assay(data, 1, withDimnames = FALSE) <- select_waveica_v1_params(
-    data, alpha_grid = alpha, t_grid = t, k_grid = K, t2 = t2, wf = wf, eval_group = eval_group
+  assay(combined, 1, withDimnames = FALSE) <- select_waveica_v1_params(
+    combined, alpha_grid = alpha_grid, t_grid = t_grid, k_grid = k_grid, t2 = t2, wf = wf,
+    eval_group = eval_group
   )
-
-  message("==> Imputation (RF on corrected data)")
-  combined <- rf_impute_corrected(data, obs_mask)
-
-  list(pre = combined, post = combined, obs_mask = obs_mask)
+  combined
 }

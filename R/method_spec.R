@@ -24,8 +24,13 @@ VALID_BATCH_METHODS <- c("none", "combat", "sva", "limma", "feature_median", "gl
 # (run_cordbat()) already accepts an externally drift-corrected, pre-imputed
 # SE (that's exactly what loess:samples:cordbat / huber:samples:cordbat do),
 # so it behaves like the "raw"-kind batch methods (feature_median etc.), not
-# like these five.
-ATOMIC_BATCH_METHODS <- c("batchcorr", "waveica", "waveica_v1", "pmp_qcrsc", "serrf")
+# like these four. Also NOT included: "waveica_v1" -- unlike WaveICA2.0,
+# WaveICA (v1) has no mechanism of its own for injection-order/drift effects
+# (its WaveICA() call doesn't take injection order, and its component-removal
+# test is a one-way ANOVA on per-batch means, blind to within-batch trends) --
+# so, like cordbat, it accepts an externally drift-corrected input rather than
+# requiring drift="none".
+ATOMIC_BATCH_METHODS <- c("batchcorr", "waveica", "pmp_qcrsc", "serrf")
 
 # Parses one "drift:basis:batch" spec string. Requires exactly 3 non-empty
 # colon-separated tokens -- no implicit/omitted basis field, so there's only
