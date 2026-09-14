@@ -272,7 +272,8 @@ BATCH_METHOD_REGISTRY <- list(
                      K = p$waveica_k, wf = p$waveica_wf, eval_group = p$waveica_eval_group)),
   waveica_v1 = list(kind = "atomic", fn = function(data, p)
     correct_waveica_v1(data, wf = p$waveica_v1_wf, K = p$waveica_v1_k, t = p$waveica_v1_t,
-                        t2 = p$waveica_v1_t2, alpha = p$waveica_v1_alpha)),
+                        t2 = p$waveica_v1_t2, alpha = p$waveica_v1_alpha,
+                        eval_group = p$waveica_v1_eval_group)),
   pmp_qcrsc = list(kind = "atomic", fn = function(data, p) correct_pmp_qcrsc(data)),
   serrf     = list(kind = "atomic", fn = function(data, p) correct_serrf(data, num = p$serrf_num_eff))
 )
@@ -899,25 +900,111 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NA_real_, wf 
 # corrected against its actual source). Still kept as WAVEICA_V1_ALPHA
 # (distinct from WAVEICA_ALPHA) in notame-workflow.r since they're separate
 # packages with separately-tuned defaults, not because the concept differs.
-correct_waveica_v1 <- function(data, wf = "haar", K = 20, t = 0.05, t2 = 0.05, alpha = 0) {
-  suppressPackageStartupMessages(library(WaveICA))
-
-  obs_mask <- !is.na(assay(data, 1))
-  data     <- lod2_impute(data)
-
-  message("==> WaveICA (v1) correction (wf=", wf, ", K=", K, ", t=", t,
-          ", t2=", t2, ", alpha=", alpha, ")")
+# Runs one WaveICA() (v1) call and returns the corrected raw-scale matrix
+# (samples transposed back to features x samples, to match this pipeline's
+# assay convention). NA in k means "auto" (2 x n_batches, same convention as
+# WaveICA2.0's K -- not something the original package defines itself, kept
+# here purely for grid-search parity) -- resolved here, not by the caller.
+run_waveica_v1_once <- function(data, alpha, t, k, t2, wf) {
+  k_eff <- if (is.na(k)) length(unique(colData(data)$Batch)) * 2 else k
   result <- WaveICA(
     data  = t(assay(data, 1)),
     wf    = wf,
     batch = as.character(colData(data)$Batch),
     group = NULL,
-    K     = K,
+    K     = k_eff,
     t     = t,
     t2    = t2,
     alpha = alpha
   )
-  assay(data, 1, withDimnames = FALSE) <- t(result$data_wave)
+  list(mat = t(result$data_wave), k_eff = k_eff)
+}
+
+# Auto-selects WaveICA (v1)'s (alpha, t, K) from the cross-product of
+# alpha_grid/t_grid/k_grid -- each a vector from a comma-separated env var
+# (WAVEICA_V1_ALPHA/WAVEICA_V1_T/WAVEICA_V1_K); a single value in every grid
+# keeps today's fixed behaviour (one WaveICA() call, no search); more than
+# one value overall triggers a search over the full cross-product,
+# evaluated against eval_group/Sample D-ratio (selection) with PCA-space
+# distance ratio and eval_group PERMANOVA R2(Batch) printed alongside every
+# candidate as informational cross-checks -- same design as
+# select_waveica_params() for WaveICA2.0. t2 is not searched: it protects
+# components correlated with an optional biological `group` variable this
+# pipeline doesn't supply (always NULL here), so it has no effect on the
+# result and isn't worth a grid dimension.
+#
+# Unlike WaveICA2.0, WaveICA (v1)'s own normFact()/stICA implementation has
+# no internal parallel::mclapply() call (verified against source) -- so,
+# unlike select_waveica_params(), candidates here don't need mc.cores pinned
+# inside each outer foreach worker.
+select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, eval_group = "ltQC") {
+  suppressPackageStartupMessages(library(foreach))
+
+  grid <- expand.grid(alpha = alpha_grid, t = t_grid, k = k_grid)
+
+  if (nrow(grid) == 1) {
+    once <- run_waveica_v1_once(data, grid$alpha[1], grid$t[1], grid$k[1], t2, wf)
+    message("  WaveICA (v1) parameters: alpha=", grid$alpha[1], ", t=", grid$t[1],
+            ", K=", once$k_eff, ", t2=", t2, ", wf=", wf)
+    return(once$mat)
+  }
+
+  message("  Auto-selecting WaveICA (v1) parameters (", nrow(grid),
+          " combination(s), evaluated against ", eval_group, "/Sample)")
+
+  results <- foreach(i = seq_len(nrow(grid))) %dopar% {
+    once <- tryCatch(run_waveica_v1_once(data, grid$alpha[i], grid$t[i], grid$k[i], t2, wf),
+                      error = function(e) NULL)
+    if (is.null(once)) {
+      list(mat = NULL, k_eff = NA_real_, dratio = NA_real_, dist_ratio = NA_real_, permanova_r2 = NA_real_)
+    } else {
+      se_trial <- data
+      assay(se_trial, 1, withDimnames = FALSE) <- once$mat
+      list(
+        mat          = once$mat,
+        k_eff        = once$k_eff,
+        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group),
+        dist_ratio   = eval_dist_ratio(se_trial, group1 = eval_group, group2 = "Sample"),
+        permanova_r2 = eval_qc_homogeneity(se_trial, group = eval_group)$permanova_r2
+      )
+    }
+  }
+
+  dratios <- vapply(results, `[[`, numeric(1), "dratio")
+  for (i in seq_len(nrow(grid))) {
+    r <- results[[i]]
+    message("    alpha=", grid$alpha[i], ", t=", grid$t[i], ", K=", r$k_eff,
+            ": ", eval_group, "/Sample D-ratio = ", if (is.na(r$dratio)) "NA" else round(r$dratio, 4),
+            ", dist_ratio = ", if (is.na(r$dist_ratio)) "NA" else round(r$dist_ratio, 4),
+            ", ", eval_group, " PERMANOVA R2(Batch) = ",
+            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4))
+  }
+
+  if (all(is.na(dratios))) {
+    message("  No candidate's ", eval_group, "/Sample D-ratio could be computed -- ",
+            "defaulting to alpha=", alpha_grid[1], ", t=", t_grid[1])
+    once <- run_waveica_v1_once(data, alpha_grid[1], t_grid[1], k_grid[1], t2, wf)
+    return(once$mat)
+  }
+
+  winner <- which.min(dratios)
+  message("  Selected: alpha=", grid$alpha[winner], ", t=", grid$t[winner],
+          ", K=", results[[winner]]$k_eff,
+          "  (", eval_group, "/Sample D-ratio = ", round(dratios[winner], 4), ")")
+  results[[winner]]$mat
+}
+
+correct_waveica_v1 <- function(data, wf = "haar", K = 20, t = 0.05, t2 = 0.05, alpha = 0,
+                                eval_group = "ltQC") {
+  suppressPackageStartupMessages(library(WaveICA))
+
+  obs_mask <- !is.na(assay(data, 1))
+  data     <- lod2_impute(data)
+
+  message("==> WaveICA (v1) correction")
+  assay(data, 1, withDimnames = FALSE) <- select_waveica_v1_params(
+    data, alpha_grid = alpha, t_grid = t, k_grid = K, t2 = t2, wf = wf, eval_group = eval_group
+  )
 
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(data, obs_mask)

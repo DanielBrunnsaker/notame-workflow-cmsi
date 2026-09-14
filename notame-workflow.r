@@ -401,16 +401,28 @@ if both are set for the same parameter.
 
   WAVEICA_V1_WF         Wavelet family for batch_method=waveica_v1 (the original WaveICA, not
                         WaveICA2.0). Same meaning as WAVEICA_WF, separate setting since the two
-                        methods are independent packages.
+                        methods are independent packages. Not part of the search grid, same as
+                        WAVEICA_WF.
                         Default: haar
 
-  WAVEICA_V1_K          Maximum number of components batch_method=waveica_v1's ICA step decomposes into.
+  WAVEICA_V1_K          Comma-separated number(s) of components batch_method=waveica_v1's ICA step
+                        decomposes into. Each entry is either a number or the literal 'auto' (2 x
+                        number of batches -- not something the original package defines itself,
+                        kept purely for parity with WAVEICA_K's convention). A single value keeps
+                        it fixed (one WaveICA() call); more than one value overall across
+                        WAVEICA_V1_ALPHA/WAVEICA_V1_T/WAVEICA_V1_K triggers a search over the full
+                        cross-product grid, same mechanism as WAVEICA_ALPHA/WAVEICA_CUTOFF/WAVEICA_K
+                        -- see WAVEICA_V1_EVAL_GROUP below.
                         Default: 20
 
-  WAVEICA_V1_T          Threshold (0-1) for considering an ICA component associated with batch
-                        in batch_method=waveica_v1. Unlike WAVEICA_CUTOFF (WaveICA2.0), this tests
-                        components directly against the real batch labels rather than injection
-                        order as a proxy for them.
+  WAVEICA_V1_T          Comma-separated threshold(s) (0-1) for considering an ICA component
+                        associated with batch in batch_method=waveica_v1. Unlike WAVEICA_CUTOFF
+                        (WaveICA2.0's GAM-R²-against-injection-order test), this tests each
+                        component directly against the real batch labels (a p-value cutoff), since
+                        waveica_v1 uses actual batch identity rather than injection order as a
+                        proxy for it. Lower = more components qualify as batch-associated (more
+                        removed, more aggressive); higher = fewer qualify (more conservative). Same
+                        single-value-fixed / multi-value-searched convention as WAVEICA_V1_K.
                         Default: 0.05
 
   WAVEICA_V1_T2         Threshold (0-1) for considering an ICA component associated with a
@@ -418,14 +430,22 @@ if both are set for the same parameter.
                         in practice -- this pipeline has no biological-group column to supply
                         waveica_v1's optional `group` argument, so that protection is inactive
                         regardless of this setting. Kept for parity with the package's own
-                        parameters.
+                        parameters; not part of the search grid since it has no effect here.
                         Default: 0.05
 
-  WAVEICA_V1_ALPHA      Trade-off (0-1) between sample-wise and variable-wise independence in
-                        batch_method=waveica_v1's ICA step. Not the same parameter as
-                        WAVEICA_ALPHA (WaveICA2.0's significance threshold for flagging a
-                        component) -- same name, unrelated meaning, different package.
+  WAVEICA_V1_ALPHA      Comma-separated trade-off value(s) (0-1) between sample-wise and
+                        variable-wise independence in batch_method=waveica_v1's ICA step. The same
+                        KIND of parameter as WAVEICA_ALPHA (WaveICA2.0) -- both are ICA
+                        spatial/temporal independence trade-offs, not a significance/flagging
+                        threshold -- kept as a separate setting since they're independent packages
+                        with separately-tuned defaults, not because the concept differs. Same
+                        single-value-fixed / multi-value-searched convention as WAVEICA_V1_K.
                         Default: 0
+
+  WAVEICA_V1_EVAL_GROUP Which group -- 'ltQC' or 'QC' -- the WAVEICA_V1_ALPHA/WAVEICA_V1_T/
+                        WAVEICA_V1_K search evaluates candidates against (D-ratio vs. Sample). Same
+                        mechanism as WAVEICA_EVAL_GROUP.
+                        Default: ltQC
 
                         Note: waveica_v1 uses real batch labels directly rather than injection
                         order as a proxy for batch structure, which may make it a better fit
@@ -558,11 +578,12 @@ parse_waveica_k_list <- function(s) {
 WAVEICA_K          <- parse_waveica_k_list(get_env("WAVEICA_K", "auto"))
 WAVEICA_WF         <- get_env("WAVEICA_WF", "haar")
 WAVEICA_EVAL_GROUP <- get_env("WAVEICA_EVAL_GROUP", "ltQC")
-WAVEICA_V1_WF     <- get_env("WAVEICA_V1_WF", "haar")
-WAVEICA_V1_K      <- as.integer(get_env("WAVEICA_V1_K", "20"))
-WAVEICA_V1_T      <- as.numeric(get_env("WAVEICA_V1_T", "0.05"))
-WAVEICA_V1_T2     <- as.numeric(get_env("WAVEICA_V1_T2", "0.05"))
-WAVEICA_V1_ALPHA  <- as.numeric(get_env("WAVEICA_V1_ALPHA", "0"))
+WAVEICA_V1_WF         <- get_env("WAVEICA_V1_WF", "haar")
+WAVEICA_V1_K          <- parse_waveica_k_list(get_env("WAVEICA_V1_K", "20"))
+WAVEICA_V1_T          <- parse_num_list(get_env("WAVEICA_V1_T", "0.05"))
+WAVEICA_V1_T2         <- as.numeric(get_env("WAVEICA_V1_T2", "0.05"))
+WAVEICA_V1_ALPHA      <- parse_num_list(get_env("WAVEICA_V1_ALPHA", "0"))
+WAVEICA_V1_EVAL_GROUP <- get_env("WAVEICA_V1_EVAL_GROUP", "ltQC")
 AUTO_LOESS_SPANS        <- parse_num_list(get_env("AUTO_LOESS_SPANS",        "0.5,0.75,0.9"))
 AUTO_HUBER_KS           <- parse_num_list(get_env("AUTO_HUBER_KS",           "1.0,1.345,2.0"))
 AUTO_SAMPLE_LOESS_SPANS <- parse_num_list(get_env("AUTO_SAMPLE_LOESS_SPANS", "0.3,0.6,0.9"))
@@ -609,6 +630,7 @@ run_preflight_checks(
   waveica_eval_group = WAVEICA_EVAL_GROUP,
   waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
   waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
+  waveica_v1_eval_group = WAVEICA_V1_EVAL_GROUP,
   combat_mean_only = COMBAT_MEAN_ONLY, combat_par_prior = COMBAT_PAR_PRIOR,
   blank_ratio = BLANK_RATIO, low_int_filter = LOW_INT_FILTER, qc_rsd_filter = QC_RSD_FILTER,
   save_pre_correction_plots = SAVE_PRE_CORRECTION_PLOTS,
@@ -946,6 +968,7 @@ params <- list(
   waveica_eval_group = WAVEICA_EVAL_GROUP,
   waveica_v1_wf = WAVEICA_V1_WF, waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
   waveica_v1_t2 = WAVEICA_V1_T2, waveica_v1_alpha = WAVEICA_V1_ALPHA,
+  waveica_v1_eval_group = WAVEICA_V1_EVAL_GROUP,
   serrf_num_eff = serrf_num_eff
 )
 

@@ -1275,6 +1275,30 @@
       "Author": "Martin Morgan [aut], Valerie Obenchain [aut], Jim Hester [aut], Hervé Pagès [aut, cre]",
       "Maintainer": "Hervé Pagès <hpages.on.github@gmail.com>"
     },
+    "WaveICA": {
+      "Package": "WaveICA",
+      "Version": "0.1.0",
+      "Source": "GitHub",
+      "Type": "Package",
+      "Title": "WaveICA",
+      "Author": "Kui Deng and Kang Li",
+      "Maintainer": "Kui Deng <dengkui_stat@163.com>",
+      "Description": "Removal of batch effects for large-scale untargeted metabolomics data based on wavelet transform.",
+      "License": "No",
+      "Encoding": "UTF-8",
+      "LazyData": "true",
+      "Imports": [
+        "waveslim",
+        "JADE",
+        "corpcor"
+      ],
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "dengkuistat",
+      "RemoteRepo": "WaveICA",
+      "RemoteRef": "master",
+      "RemoteSha": "55ccd67a8b54c8d1dc5bec9138ee7b2d397c8c49"
+    },
     "WaveICA2.0": {
       "Package": "WaveICA2.0",
       "Version": "0.1.0",
@@ -2550,6 +2574,12 @@
     "ggfortify": {
       "Package": "ggfortify",
       "Version": "0.4.23",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "gridExtra": {
+      "Package": "gridExtra",
+      "Version": "2.3.1",
       "Source": "Repository",
       "Repository": "CRAN"
     },
@@ -3830,6 +3860,25 @@
       "NeedsCompilation": "yes",
       "Author": "Hadley Wickham [aut, cre]",
       "Maintainer": "Hadley Wickham <hadley@rstudio.com>",
+      "Repository": "CRAN"
+    },
+    "plsdepot": {
+      "Package": "plsdepot",
+      "Version": "0.3.1",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "pROC": {
+      "Package": "pROC",
+      "Version": "1.19.1",
+      "Source": "Repository",
+      "Imports": [
+        "methods",
+        "Rcpp (>= 0.11.1)"
+      ],
+      "LinkingTo": [
+        "Rcpp"
+      ],
       "Repository": "CRAN"
     },
     "pmp": {

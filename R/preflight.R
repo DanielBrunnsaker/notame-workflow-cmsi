@@ -103,6 +103,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   loess_qc_cv_spans, huber_qc_cv_ks,
                                   waveica_alpha, waveica_cutoff, waveica_k, waveica_eval_group,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
+                                  waveica_v1_eval_group,
                                   combat_mean_only, combat_par_prior,
                                   blank_ratio, low_int_filter, qc_rsd_filter,
                                   save_pre_correction_plots,
@@ -215,10 +216,11 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric_list(problems, "WAVEICA_CUTOFF", waveica_cutoff, min = 0, max = 1)
   problems <- check_waveica_k_list(problems, "WAVEICA_K", waveica_k, min = 1)
   problems <- check_one_of(problems, "WAVEICA_EVAL_GROUP", waveica_eval_group, c("ltQC", "QC"))
-  problems <- check_numeric(problems, "WAVEICA_V1_K",            waveica_v1_k,     min = 1)
-  problems <- check_numeric(problems, "WAVEICA_V1_T",            waveica_v1_t,     min = 0, max = 1)
+  problems <- check_waveica_k_list(problems, "WAVEICA_V1_K",     waveica_v1_k,     min = 1)
+  problems <- check_numeric_list(problems, "WAVEICA_V1_T",       waveica_v1_t,     min = 0, max = 1)
   problems <- check_numeric(problems, "WAVEICA_V1_T2",           waveica_v1_t2,    min = 0, max = 1)
-  problems <- check_numeric(problems, "WAVEICA_V1_ALPHA",        waveica_v1_alpha, min = 0, max = 1)
+  problems <- check_numeric_list(problems, "WAVEICA_V1_ALPHA",   waveica_v1_alpha, min = 0, max = 1)
+  problems <- check_one_of(problems, "WAVEICA_V1_EVAL_GROUP", waveica_v1_eval_group, c("ltQC", "QC"))
   problems <- check_tri_logical(problems, "COMBAT_MEAN_ONLY", combat_mean_only)
   problems <- check_tri_logical(problems, "COMBAT_PAR_PRIOR", combat_par_prior)
 
