@@ -177,6 +177,19 @@ if both are set for the same parameter.
                         Set to 0 to disable.
                         Default: 1
 
+  MIN_BATCH_DETECTION_FRAC  Minimum fraction (0-1) of each batch's samples a feature must be
+                        detected in. Unlike MIN_BATCH_DETECTION (an absolute count), this
+                        scales with batch size, so batches of very different sizes get a
+                        consistent relative bar instead of a fixed count that's stringent for
+                        a small batch and lax for a large one. Applied in addition to
+                        MIN_BATCH_DETECTION, not instead of it -- a feature must pass both.
+                        Relevant for batch_method=waveica/waveica_v1 (and other methods whose
+                        LoD/2-imputed placeholders participate directly in fitting the
+                        correction): a batch with disproportionately more missingness than
+                        others risks its placeholder pattern getting mistaken for real signal.
+                        Set to 0 to disable.
+                        Default: 0 (disabled)
+
   QC_RSD_FILTER         Pre-correction QC-RSD threshold (robust: MAD/median). Features are
                         removed if they fail the threshold in >= 50% of evaluable batches.
                         Set to 'none' to disable.
@@ -543,6 +556,7 @@ qc_rsd_env    <- get_env("QC_RSD_FILTER", "none")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
+MIN_BATCH_DETECTION_FRAC <- as.numeric(get_env("MIN_BATCH_DETECTION_FRAC", "0"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods: each CORRECTION_METHODS entry is a "drift:basis:batch"
@@ -618,6 +632,7 @@ run_preflight_checks(
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
+  min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_qc_span = LOESS_QC_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
   drift_min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH,
@@ -796,6 +811,27 @@ if (MIN_BATCH_DETECTION > 0) {
 }
 n_after_batchdet <- nrow(data)
 
+# Per-batch detection filter (fraction-based): feature must have detection in
+# >= MIN_BATCH_DETECTION_FRAC of each batch's samples. Unlike
+# MIN_BATCH_DETECTION (an absolute count), this scales with batch size, so
+# batches of very different sizes get a consistent relative bar instead of a
+# fixed count that's stringent for a small batch and lax for a large one --
+# relevant for methods (e.g. batch_method=waveica/waveica_v1) whose
+# LoD/2-imputed placeholders participate directly in fitting the correction,
+# where a batch with disproportionately more missingness risks its
+# placeholder pattern getting mistaken for real signal.
+if (MIN_BATCH_DETECTION_FRAC > 0) {
+  cd_batch_frac  <- as.data.frame(colData(data))
+  batches_frac   <- unique(cd_batch_frac$Batch)
+  batch_det_frac <- do.call(cbind, lapply(batches_frac, function(b) {
+    idx <- which(cd_batch_frac$Batch == b)
+    rowMeans(!is.na(assay(data)[, idx, drop = FALSE]))
+  }))
+  pass_all_batches_frac <- apply(batch_det_frac, 1, function(x) all(x >= MIN_BATCH_DETECTION_FRAC))
+  data <- data[pass_all_batches_frac, ]
+}
+n_after_batchdetfrac <- nrow(data)
+
 # Pre-imputation QC-RSD filter (per batch; pass = acceptable RSD in >= 1 batch)
 if (!is.na(QC_RSD_FILTER)) {
   cd_pre  <- as.data.frame(colData(data))
@@ -828,20 +864,22 @@ filter_log <- data.frame(
     sprintf("Sample detection (>= %.0f%%)", SAMPLE_DETECTION_LIMIT * 100),
     "Zero variance",
     if (MIN_BATCH_DETECTION > 0) sprintf("Per-batch detection (>= %d per batch)", MIN_BATCH_DETECTION) else "Per-batch detection (disabled)",
+    if (MIN_BATCH_DETECTION_FRAC > 0) sprintf("Per-batch detection (>= %.0f%% per batch)", MIN_BATCH_DETECTION_FRAC * 100) else "Per-batch detection, fraction (disabled)",
     if (!is.na(QC_RSD_FILTER)) sprintf("QC-RSD filter (<= %.0f%% in >= 1 batch)", QC_RSD_FILTER * 100) else "QC-RSD filter (disabled)"
   ),
   features_removed = c(
-    n_before          - n_after_blank,
-    n_after_blank     - n_after_lowint,
-    n_after_lowint    - n_after_qc,
-    n_after_qc        - n_after_sample,
-    n_after_sample    - n_after_zerovar,
-    n_after_zerovar   - n_after_batchdet,
-    n_after_batchdet  - n_after_qcrsd
+    n_before             - n_after_blank,
+    n_after_blank        - n_after_lowint,
+    n_after_lowint       - n_after_qc,
+    n_after_qc           - n_after_sample,
+    n_after_sample       - n_after_zerovar,
+    n_after_zerovar      - n_after_batchdet,
+    n_after_batchdet     - n_after_batchdetfrac,
+    n_after_batchdetfrac - n_after_qcrsd
   ),
   features_remaining = c(
     n_after_blank, n_after_lowint,
-    n_after_qc, n_after_sample, n_after_zerovar, n_after_batchdet, n_after_qcrsd
+    n_after_qc, n_after_sample, n_after_zerovar, n_after_batchdet, n_after_batchdetfrac, n_after_qcrsd
   )
 )
 cat("\n--- Pre-filtering summary ---\n")
@@ -871,6 +909,7 @@ run_params <- list(
   "LOW_INT_CUTOFF"          = if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)",
   "MIN_QC_SAMPLE_DETECTION" = MIN_QC_SAMPLE_DETECTION,
   "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
+  "MIN_BATCH_DETECTION_FRAC" = MIN_BATCH_DETECTION_FRAC,
   "QC_RSD_FILTER"           = if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)",
   "RSD_THRESHOLD"           = RSD_THRESHOLD,
   "RUV_K"                   = RUV_K,

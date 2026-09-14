@@ -93,6 +93,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   qc_detection_limit, sample_detection_limit,
                                   low_int_filter_frac, low_int_percentile,
                                   min_qc_sample_detection, min_batch_detection,
+                                  min_batch_detection_frac,
                                   rsd_threshold, ruv_k, serrf_num, loess_qc_span,
                                   loess_sample_span, drift_sample_min_obs,
                                   drift_min_qc_per_batch, drift_min_ltqc_validate,
@@ -195,6 +196,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
 
   # Numeric parameters: required integers
   problems <- check_numeric(problems, "MIN_BATCH_DETECTION",    min_batch_detection,    min = 0)
+  problems <- check_numeric(problems, "MIN_BATCH_DETECTION_FRAC", min_batch_detection_frac, min = 0, max = 1)
   problems <- check_numeric(problems, "RUV_K",                  ruv_k,                  min = 1)
   problems <- check_numeric(problems, "SERRF_NUM",               serrf_num,              min = 1)
   problems <- check_numeric(problems, "DRIFT_SAMPLE_MIN_OBS",    drift_sample_min_obs,   min = 4)
