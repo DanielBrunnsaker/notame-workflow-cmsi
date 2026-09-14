@@ -171,6 +171,22 @@ if both are set for the same parameter.
                         are removed before processing (empty injections, failed runs).
                         Default: 0.50
 
+  QC_OUTLIER_MAD_K      Multivariate outlier check for QC/ltQC samples (PCA-distance-based),
+                        run separately for QC and ltQC, per batch, after
+                        MIN_QC_SAMPLE_DETECTION's removal (so badly-detected samples don't
+                        distort the reference centroid this compares everyone else against).
+                        Complements MIN_QC_SAMPLE_DETECTION: that catches a sample that failed
+                        to detect most features; this catches one that detects fine but has an
+                        anomalous intensity profile (contamination, carryover, a
+                        degrading/recovering column) -- a failure mode detection-rate is
+                        structurally blind to. A sample is flagged if its Euclidean distance
+                        (in PCA score space, top 5 PCs, unit-variance scaled) from its batch
+                        group's median score exceeds median(distances) + K * mad(distances).
+                        Lower K = more aggressive (flags more samples); higher K = more
+                        conservative. Batches with fewer than 4 samples of a group are skipped
+                        (not enough points for a meaningful check). Set to 0 to disable.
+                        Default: 5
+
   MIN_BATCH_DETECTION   Minimum number of detections a feature must have in every batch.
                         Features absent from any entire batch are removed — they have no
                         real measurements there and would be all-imputed placeholders.
@@ -555,6 +571,7 @@ LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
 qc_rsd_env    <- get_env("QC_RSD_FILTER", "none")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
+QC_OUTLIER_MAD_K        <- as.numeric(get_env("QC_OUTLIER_MAD_K", "5"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 MIN_BATCH_DETECTION_FRAC <- as.numeric(get_env("MIN_BATCH_DETECTION_FRAC", "0"))
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
@@ -632,7 +649,7 @@ run_preflight_checks(
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
-  min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC,
+  min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC, qc_outlier_mad_k = QC_OUTLIER_MAD_K,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_qc_span = LOESS_QC_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
   drift_min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH,
@@ -777,6 +794,19 @@ for (qc_group in c("QC", "ltQC")) {
   }
 }
 
+# Multivariate QC/ltQC outlier removal (PCA-distance-based, per batch).
+# Runs after the detection-rate removal above so badly-detected samples
+# (which would distort the reference centroid) are already gone; catches a
+# different failure mode -- a sample that detects fine but has an anomalous
+# intensity profile (contamination, carryover, a degrading/recovering
+# column). QC and ltQC checked separately (see detect_qc_outliers()).
+if (QC_OUTLIER_MAD_K > 0) {
+  for (qc_group in c("QC", "ltQC")) {
+    outlier_idx <- detect_qc_outliers(data, group = qc_group, mad_k = QC_OUTLIER_MAD_K)
+    if (length(outlier_idx) > 0) data <- data[, -outlier_idx]
+  }
+}
+
 # QC detection filter
 data <- flag_detection(data, qc_limit = QC_DETECTION_LIMIT)
 data <- drop_flagged(data)
@@ -908,6 +938,7 @@ run_params <- list(
   "LOW_INT_PERCENTILE"      = LOW_INT_PERCENTILE,
   "LOW_INT_CUTOFF"          = if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)",
   "MIN_QC_SAMPLE_DETECTION" = MIN_QC_SAMPLE_DETECTION,
+  "QC_OUTLIER_MAD_K"        = QC_OUTLIER_MAD_K,
   "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
   "MIN_BATCH_DETECTION_FRAC" = MIN_BATCH_DETECTION_FRAC,
   "QC_RSD_FILTER"           = if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)",

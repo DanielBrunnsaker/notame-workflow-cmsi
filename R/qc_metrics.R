@@ -291,6 +291,74 @@ eval_dist_ratio <- function(se, group1 = "ltQC", group2 = "Sample", n_pcs = 20) 
   median(d1) / median(d2)
 }
 
+# Returns column indices (into `data`) of QC/ltQC samples that are
+# multivariate outliers relative to their own batch's OTHER samples of the
+# same group, in PCA space. Complements MIN_QC_SAMPLE_DETECTION
+# (missingness-rate-based): that check catches a sample that failed to
+# detect most features (empty injection, instrument failure); this one
+# catches a sample that detects plenty of features but whose intensity
+# PROFILE is anomalous (contamination, carryover, a degrading/recovering
+# column) -- a failure mode detection-rate is structurally blind to.
+#
+# Run per batch, not pooled across the whole run: QC/ltQC intensities differ
+# systematically between batches before any correction has happened, so
+# pooling would either mask a real within-batch outlier under the larger
+# between-batch spread, or flag a perfectly normal QC just because its batch
+# differs from others.
+#
+# `data` should already have MIN_QC_SAMPLE_DETECTION's badly-detected samples
+# removed before this runs -- including them here would distort the very
+# centroid this check compares everyone else against.
+#
+# Distance is Euclidean, in PCA score space (top n_pcs, unit-variance
+# scaled, same convention as eval_dist_ratio()), from each sample to the
+# per-batch group's median score (robust centroid). A sample is flagged if
+# its distance exceeds median(distances) + mad_k * mad(distances) -- a
+# robust (MAD-based, not SD-based) outlier rule, consistent with this
+# pipeline's general preference for MAD/median over mean/SD given how
+# outlier-prone metabolomics intensity data is. Batches with fewer than
+# min_n samples of this group are skipped (not enough points for a
+# meaningful PCA-space distance check).
+detect_qc_outliers <- function(data, group, min_n = 4, mad_k = 5, n_pcs = 5) {
+  cd      <- as.data.frame(colData(data))
+  mat_imp <- assay(lod2_impute(data), 1)  # local imputation, just for this diagnostic
+  batches <- unique(cd$Batch)
+  flagged <- integer(0)
+
+  for (b in batches) {
+    idx <- which(cd$Batch == b & cd$QC == group)
+    if (length(idx) < min_n) next
+
+    sub      <- t(mat_imp[, idx, drop = FALSE])  # samples x features
+    feat_var <- apply(sub, 2, var)
+    sub      <- sub[, !is.na(feat_var) & feat_var > 0, drop = FALSE]
+    if (ncol(sub) < 2) next
+
+    n_pcs_use <- min(n_pcs, nrow(sub) - 1, ncol(sub))
+    pca <- tryCatch(prcomp(sub, center = TRUE, scale. = TRUE, rank. = n_pcs_use),
+                     error = function(e) NULL)
+    if (is.null(pca)) next
+
+    scores   <- pca$x
+    centroid <- apply(scores, 2, median)
+    dists    <- sqrt(rowSums(sweep(scores, 2, centroid)^2))
+
+    mad_dist <- mad(dists)
+    if (mad_dist == 0) next  # every point equidistant from centroid -- nothing to flag
+    thresh <- median(dists) + mad_k * mad_dist
+    bad    <- idx[dists > thresh]
+
+    if (length(bad) > 0) {
+      message("  Batch ", b, ": ", length(bad), " ", group, " outlier sample(s) ",
+              "(PCA distance > ", round(thresh, 2), "): ",
+              paste(cd$Sample_ID[bad], collapse = ", "))
+      flagged <- c(flagged, bad)
+    }
+  }
+
+  flagged
+}
+
 
 # Compute within-batch pairwise Euclidean distance preservation.
 # For each batch, computes all pairwise distances between biological samples in

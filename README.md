@@ -212,6 +212,7 @@ directly analogous substitute.
 | `QC_DETECTION_LIMIT` | No | `0.60` | Min detection rate in QC samples |
 | `SAMPLE_DETECTION_LIMIT` | No | `0.20` | Min detection rate in biological samples |
 | `MIN_QC_SAMPLE_DETECTION` | No | `0.50` | Min fraction of features detected in a QC or ltQC sample for it to be used as reference. Samples below this are removed before processing (e.g. empty injections) |
+| `QC_OUTLIER_MAD_K` | No | `5` | Multivariate outlier check for QC/ltQC samples, run separately per group and per batch, after `MIN_QC_SAMPLE_DETECTION`'s removal. A sample is flagged if its PCA-space distance (top 5 PCs) from its batch group's median score exceeds `median(distances) + K * mad(distances)`. Lower = more aggressive; higher = more conservative. Complements `MIN_QC_SAMPLE_DETECTION` — catches a sample with a normal detection rate but an anomalous intensity profile (contamination, carryover, a degrading/recovering column). Batches with fewer than 4 samples of a group are skipped. Set to `0` to disable |
 | `MIN_BATCH_DETECTION` | No | `1` | Min number of detections a feature must have in every batch. Features absent from any entire batch are removed (set to `0` to disable) |
 | `MIN_BATCH_DETECTION_FRAC` | No | `0` (disabled) | Min fraction (0-1) of each batch's samples a feature must be detected in. Unlike `MIN_BATCH_DETECTION` (an absolute count), this scales with batch size, so batches of very different sizes get a consistent relative bar rather than a fixed count that's stringent for a small batch and lax for a large one. Applied in addition to `MIN_BATCH_DETECTION`, not instead of it. Most relevant for `batch=waveica`/`waveica_v1`, where LoD/2-imputed placeholders participate directly in fitting the correction — a batch with disproportionately more missingness than others risks its placeholder pattern being mistaken for real signal |
 | `QC_RSD_FILTER` | No | `none` | Max pre-correction QC RSD (robust: MAD/median); feature must pass in ≥ 50% of batches. Set to e.g. `0.80` to enable |
@@ -404,10 +405,13 @@ Applied before correction, in order:
 1. Blank filter — removes features where sample signal ≤ `BLANK_RATIO` × blank signal (SolvBlank samples only; disabled by default)
 2. Low-intensity filter — removes features whose p80 intensity is below `LOW_INT_FILTER_FRAC` × mean p80 across all features (or below `LOW_INT_FILTER` if set)
 3. QC/ltQC sample quality check — removes individual QC or ltQC samples with feature detection rate below `MIN_QC_SAMPLE_DETECTION` (e.g. empty injections, failed runs)
-4. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
-5. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
-6. Zero variance — removes features with no variation across samples
-7. QC-RSD filter — removes features with QC robust RSD (MAD/median) > `QC_RSD_FILTER` in ≥ 50% of batches (disabled by default)
+4. QC/ltQC multivariate outlier check — removes individual QC or ltQC samples that are PCA-space distance outliers relative to their own batch's other samples of the same group (`QC_OUTLIER_MAD_K`; disabled by setting to `0`). Runs after step 3, on the samples that survive it. Catches a different failure mode than step 3 — a sample that detects fine but has an anomalous intensity profile (contamination, carryover, a degrading/recovering column)
+5. QC detection — removes features not detected in ≥ `QC_DETECTION_LIMIT` of QC samples
+6. Sample detection — removes features not detected in ≥ `SAMPLE_DETECTION_LIMIT` of biological samples
+7. Zero variance — removes features with no variation across samples
+8. Per-batch detection (absolute) — removes features with fewer than `MIN_BATCH_DETECTION` real observations in any batch
+9. Per-batch detection (fraction) — removes features detected in less than `MIN_BATCH_DETECTION_FRAC` of any batch's samples (disabled by default; see [Correction methods](#correction-methods) parameter table)
+10. QC-RSD filter — removes features with QC robust RSD (MAD/median) > `QC_RSD_FILTER` in ≥ 50% of batches (disabled by default)
 
 ## Sample types
 
