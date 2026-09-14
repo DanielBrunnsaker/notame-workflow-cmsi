@@ -418,10 +418,13 @@ if both are set for the same parameter.
   WAVEICA_V1_T          Comma-separated threshold(s) (0-1) for considering an ICA component
                         associated with batch in batch_method=waveica_v1. Unlike WAVEICA_CUTOFF
                         (WaveICA2.0's GAM-R²-against-injection-order test), this tests each
-                        component directly against the real batch labels (a p-value cutoff), since
-                        waveica_v1 uses actual batch identity rather than injection order as a
-                        proxy for it. Lower = more components qualify as batch-associated (more
-                        removed, more aggressive); higher = fewer qualify (more conservative). Same
+                        component's p-value directly against the real batch labels (a component is
+                        removed if its p-value is below this threshold), since waveica_v1 uses
+                        actual batch identity rather than injection order as a proxy for it. Higher
+                        = a looser significance bar, so more components qualify as batch-associated
+                        (more removed, more aggressive); lower = stricter, fewer qualify (more
+                        conservative) -- opposite direction from WAVEICA_CUTOFF, which thresholds an
+                        R² a component must exceed rather than a p-value it must fall under. Same
                         single-value-fixed / multi-value-searched convention as WAVEICA_V1_K.
                         Default: 0.05
 

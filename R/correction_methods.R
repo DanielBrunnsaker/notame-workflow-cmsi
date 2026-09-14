@@ -768,23 +768,33 @@ run_waveica_once <- function(data, alpha, cutoff, k, wf) {
 # ("ltQC" or "QC") picks which one; ltQC is the pipeline-wide default, QC is
 # there for when it has more samples to draw on.
 #
-# Three metrics are computed per candidate, but only one drives selection:
-#   - eval_group/Sample D-ratio -- primary, selects the winner. Consistent
-#     with every other auto-selection in this pipeline (combat_correct(),
-#     sva_correct(), auto_select_drift_correction()).
-#   - eval_dist_ratio() (PCA-space distance ratio) -- informational only.
-#     D-ratio is a per-feature metric; WaveICA2.0 is an ICA-based method
-#     whose entire mechanism operates jointly across features, so a
-#     per-feature-only metric could miss damage to that joint structure.
-#     This is the multivariate cross-check for that specific blind spot.
+# Three metrics are computed per candidate:
+#   - eval_group/Sample D-ratio -- primary, selects the winner among
+#     candidates that pass the guard below. Consistent with every other
+#     auto-selection in this pipeline (combat_correct(), sva_correct(),
+#     auto_select_drift_correction()).
+#   - eval_dist_ratio() (PCA-space distance ratio of eval_group vs Sample) --
+#     doubles as a guard, not just informational. D-ratio alone can be
+#     minimized by a candidate that shrinks Sample variance faster than
+#     eval_group variance (destroying biological signal, not removing
+#     technical noise) or, separately, by one that inflates within-group
+#     scatter among eval_group replicates themselves (which should stay tight
+#     regardless of correction) -- both were observed in real runs (WaveICA2.0
+#     and WaveICA v1 respectively) where the D-ratio "winner" had visibly
+#     worse QC/ltQC replicate clustering in PCA than doing nothing. dist_ratio
+#     is a ratio (like D-ratio), so it's insensitive to uniform rescaling,
+#     making it a well-suited guard: any candidate whose dist_ratio is worse
+#     than the UNCORRECTED baseline's is excluded before picking the D-ratio
+#     winner, rather than trusting D-ratio alone to catch this.
 #   - eval_qc_homogeneity()'s PERMANOVA R²(Batch) -- informational only.
-#     D-ratio and dist_ratio both measure technical-noise-vs-signal; neither
-#     directly asks whether batch-driven clustering actually went down,
-#     which is the literal purpose of a batch-correction method. A separate,
-#     genuinely different axis worth seeing alongside the other two.
-# All three are printed for every candidate so a disagreement is visible
-# (same reasoning as auto_select_drift_correction() printing ltQC/Sample
-# D-ratio alongside pooled LOO-CV score for its QC-tier candidates).
+#     Directly asks whether batch-driven clustering went down, a genuinely
+#     different axis from the noise-vs-signal question D-ratio/dist_ratio
+#     answer. Not used as a guard since it's vulnerable to the same
+#     within-group-scatter inflation dist_ratio's guard already catches.
+# All three are printed for every candidate so a disagreement -- or a guard
+# exclusion -- is visible (same reasoning as auto_select_drift_correction()
+# printing ltQC/Sample D-ratio alongside pooled LOO-CV score for its QC-tier
+# candidates).
 #
 # Candidates run in parallel via foreach, reusing this pipeline's existing
 # registerDoParallel() setup (notame-workflow.r). WaveICA_2.0() itself calls
@@ -810,6 +820,8 @@ select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eva
   message("  Auto-selecting WaveICA2.0 parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
+  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     options(mc.cores = 1)
     once <- tryCatch(run_waveica_once(data, grid$alpha[i], grid$cutoff[i], grid$k[i], wf),
@@ -829,24 +841,38 @@ select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eva
     }
   }
 
-  dratios <- vapply(results, `[[`, numeric(1), "dratio")
+  dratios     <- vapply(results, `[[`, numeric(1), "dratio")
+  dist_ratios <- vapply(results, `[[`, numeric(1), "dist_ratio")
+  # Guard: skipped (every candidate passes) if the uncorrected baseline itself
+  # couldn't be computed -- otherwise excludes any candidate that leaves
+  # eval_group replicates more spread out (relative to Sample) than doing
+  # nothing at all.
+  passes_guard <- if (is.na(baseline_dist_ratio)) {
+    rep(TRUE, nrow(grid))
+  } else {
+    !is.na(dist_ratios) & dist_ratios <= baseline_dist_ratio
+  }
+
   for (i in seq_len(nrow(grid))) {
     r <- results[[i]]
+    guard_note <- if (!passes_guard[i]) "  [excluded: dist_ratio worse than uncorrected]" else ""
     message("    alpha=", grid$alpha[i], ", Cutoff=", grid$cutoff[i], ", K=", r$k_eff,
             ": ", eval_group, "/Sample D-ratio = ", if (is.na(r$dratio)) "NA" else round(r$dratio, 4),
             ", dist_ratio = ", if (is.na(r$dist_ratio)) "NA" else round(r$dist_ratio, 4),
             ", ", eval_group, " PERMANOVA R2(Batch) = ",
-            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4))
+            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4),
+            guard_note)
   }
 
-  if (all(is.na(dratios))) {
-    message("  No candidate's ", eval_group, "/Sample D-ratio could be computed -- ",
-            "defaulting to alpha=", alpha_grid[1], ", Cutoff=", cutoff_grid[1])
+  eligible <- which(passes_guard & !is.na(dratios))
+  if (length(eligible) == 0) {
+    message("  No candidate passed the dist_ratio guard (or had a computable ", eval_group,
+            "/Sample D-ratio) -- defaulting to alpha=", alpha_grid[1], ", Cutoff=", cutoff_grid[1])
     once <- run_waveica_once(data, alpha_grid[1], cutoff_grid[1], k_grid[1], wf)
     return(once$mat)
   }
 
-  winner <- which.min(dratios)
+  winner <- eligible[which.min(dratios[eligible])]
   message("  Selected: alpha=", grid$alpha[winner], ", Cutoff=", grid$cutoff[winner],
           ", K=", results[[winner]]$k_eff,
           "  (", eval_group, "/Sample D-ratio = ", round(dratios[winner], 4), ")")
@@ -924,13 +950,14 @@ run_waveica_v1_once <- function(data, alpha, t, k, t2, wf) {
 # alpha_grid/t_grid/k_grid -- each a vector from a comma-separated env var
 # (WAVEICA_V1_ALPHA/WAVEICA_V1_T/WAVEICA_V1_K); a single value in every grid
 # keeps today's fixed behaviour (one WaveICA() call, no search); more than
-# one value overall triggers a search over the full cross-product,
-# evaluated against eval_group/Sample D-ratio (selection) with PCA-space
-# distance ratio and eval_group PERMANOVA R2(Batch) printed alongside every
-# candidate as informational cross-checks -- same design as
-# select_waveica_params() for WaveICA2.0. t2 is not searched: it protects
-# components correlated with an optional biological `group` variable this
-# pipeline doesn't supply (always NULL here), so it has no effect on the
+# one value overall triggers a search over the full cross-product, evaluated
+# against eval_group/Sample D-ratio (primary selection, among candidates that
+# pass the dist_ratio guard) with PERMANOVA R2(Batch) printed alongside every
+# candidate as an informational cross-check -- same design, and same
+# dist_ratio-guard rationale, as select_waveica_params() for WaveICA2.0 (see
+# its docstring for why D-ratio alone isn't trusted). t2 is not searched: it
+# protects components correlated with an optional biological `group` variable
+# this pipeline doesn't supply (always NULL here), so it has no effect on the
 # result and isn't worth a grid dimension.
 #
 # Unlike WaveICA2.0, WaveICA (v1)'s own normFact()/stICA implementation has
@@ -952,6 +979,8 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
   message("  Auto-selecting WaveICA (v1) parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
+  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     once <- tryCatch(run_waveica_v1_once(data, grid$alpha[i], grid$t[i], grid$k[i], t2, wf),
                       error = function(e) NULL)
@@ -970,24 +999,34 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
     }
   }
 
-  dratios <- vapply(results, `[[`, numeric(1), "dratio")
+  dratios     <- vapply(results, `[[`, numeric(1), "dratio")
+  dist_ratios <- vapply(results, `[[`, numeric(1), "dist_ratio")
+  passes_guard <- if (is.na(baseline_dist_ratio)) {
+    rep(TRUE, nrow(grid))
+  } else {
+    !is.na(dist_ratios) & dist_ratios <= baseline_dist_ratio
+  }
+
   for (i in seq_len(nrow(grid))) {
     r <- results[[i]]
+    guard_note <- if (!passes_guard[i]) "  [excluded: dist_ratio worse than uncorrected]" else ""
     message("    alpha=", grid$alpha[i], ", t=", grid$t[i], ", K=", r$k_eff,
             ": ", eval_group, "/Sample D-ratio = ", if (is.na(r$dratio)) "NA" else round(r$dratio, 4),
             ", dist_ratio = ", if (is.na(r$dist_ratio)) "NA" else round(r$dist_ratio, 4),
             ", ", eval_group, " PERMANOVA R2(Batch) = ",
-            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4))
+            if (is.na(r$permanova_r2)) "NA" else round(r$permanova_r2, 4),
+            guard_note)
   }
 
-  if (all(is.na(dratios))) {
-    message("  No candidate's ", eval_group, "/Sample D-ratio could be computed -- ",
-            "defaulting to alpha=", alpha_grid[1], ", t=", t_grid[1])
+  eligible <- which(passes_guard & !is.na(dratios))
+  if (length(eligible) == 0) {
+    message("  No candidate passed the dist_ratio guard (or had a computable ", eval_group,
+            "/Sample D-ratio) -- defaulting to alpha=", alpha_grid[1], ", t=", t_grid[1])
     once <- run_waveica_v1_once(data, alpha_grid[1], t_grid[1], k_grid[1], t2, wf)
     return(once$mat)
   }
 
-  winner <- which.min(dratios)
+  winner <- eligible[which.min(dratios[eligible])]
   message("  Selected: alpha=", grid$alpha[winner], ", t=", grid$t[winner],
           ", K=", results[[winner]]$k_eff,
           "  (", eval_group, "/Sample D-ratio = ", round(dratios[winner], 4), ")")
