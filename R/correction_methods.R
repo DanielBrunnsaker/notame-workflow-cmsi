@@ -318,13 +318,13 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   obs_mask  <- !is.na(assay(combined, 1))
   n_batches <- length(unique(colData(combined)$Batch))
 
-  # Available to entry$fn via params$obs_mask below -- currently only read by
-  # select_waveica_v1_params()'s guard baseline (see its docstring), which
-  # needs the true pre-imputation missingness pattern to RF-impute a baseline
-  # the same way correct_none() does, rather than comparing against the
-  # LoD/2-imputed intermediate (which is not what "uncorrected" means
-  # anywhere else in this pipeline's reporting). Other registry fn's ignore
-  # this extra field.
+  # Available to entry$fn via params$obs_mask -- currently only read by
+  # select_waveica_v1_params()'s search loop, to mask out originally-missing
+  # (LoD/2-placeholder-then-corrected) cells before computing each
+  # candidate's D-ratio, so it's evaluated on the same genuinely-observed
+  # values save_correction_summary()'s final reported D-ratio uses (via its
+  # own mask=obs_mask), not the full imputed-and-corrected matrix. Other
+  # registry fn's ignore this extra field.
   params$obs_mask <- obs_mask
 
   if (entry$kind == "none") {
@@ -840,16 +840,7 @@ select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eva
   message("  Auto-selecting WaveICA2.0 parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
-  # See select_waveica_v1_params()'s matching comment: the guard baseline
-  # must be RF-imputed the same way correct_none() computes "uncorrected"
-  # for the summary table, not compared against `data`'s LoD/2-imputed
-  # intermediate -- otherwise the guard and the final report are measuring
-  # against two different, non-comparable baselines.
-  baseline_dist_ratio <- if (!is.null(obs_mask)) {
-    eval_dist_ratio(rf_impute_corrected(data, obs_mask), group1 = eval_group, group2 = "Sample")
-  } else {
-    eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
-  }
+  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
 
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     options(mc.cores = 1)
@@ -863,7 +854,7 @@ select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eva
       list(
         mat          = once$mat,
         k_eff        = once$k_eff,
-        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group),
+        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group, mask = obs_mask),
         dist_ratio   = eval_dist_ratio(se_trial, group1 = eval_group, group2 = "Sample"),
         permanova_r2 = eval_qc_homogeneity(se_trial, group = eval_group)$permanova_r2
       )
@@ -1018,25 +1009,7 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
   message("  Auto-selecting WaveICA (v1) parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
-  # The guard baseline must be comparable to what "uncorrected" means
-  # everywhere else in this pipeline's reporting (correct_none(): RF-imputed,
-  # never LoD/2) -- not `data` itself, which by this point has already been
-  # through LoD/2's crude constant-fill (run_correction() imputes it before
-  # calling any "complete"-kind method, since WaveICA needs a complete
-  # matrix). Comparing candidates against a LoD/2-imputed baseline instead of
-  # the true RF-imputed uncorrected reference is what let a real run's guard
-  # reject every one of 60 candidates while the eventual (fallback) output
-  # compared favorably against the actual uncorrected row in the summary
-  # table -- the guard and the final report were measuring against two
-  # different "uncorrected" baselines. obs_mask (the true pre-imputation
-  # missingness pattern, threaded through from run_correction() via
-  # params$obs_mask) lets us reconstruct and RF-impute a real one here,
-  # via the same rf_impute_corrected() helper correct_none() itself uses.
-  baseline_dist_ratio <- if (!is.null(obs_mask)) {
-    eval_dist_ratio(rf_impute_corrected(data, obs_mask), group1 = eval_group, group2 = "Sample")
-  } else {
-    eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
-  }
+  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
 
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     once <- tryCatch(run_waveica_v1_once(data, grid$alpha[i], grid$t[i], grid$k[i], t2, wf),
@@ -1049,7 +1022,7 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
       list(
         mat          = once$mat,
         k_eff        = once$k_eff,
-        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group),
+        dratio       = eval_ltqc_dratio(se_trial, reference_group = eval_group, mask = obs_mask),
         dist_ratio   = eval_dist_ratio(se_trial, group1 = eval_group, group2 = "Sample"),
         permanova_r2 = eval_qc_homogeneity(se_trial, group = eval_group)$permanova_r2
       )
