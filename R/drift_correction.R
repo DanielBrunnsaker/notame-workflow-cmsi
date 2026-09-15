@@ -21,18 +21,24 @@
 #                                    used by run_correction() (R/correction_methods.R) for every
 #                                    drift x basis combination except "auto" (handled separately,
 #                                    since it operates over all batches at once)
-# select_pooled_qc_candidate()    — pools per-feature LOO-CV-on-QC scores across a set of batches,
-#                                   picks one shared winning candidate; extracted from
-#                                   auto_select_drift_correction() so it can be reused for any basis
-# select_pooled_sample_candidate() — same idea, pooling ltQC/Sample D-ratio for a samples-based pick
-# auto_select_drift_correction() — basis-parameterized (qc/samples/hybrid): picks ONE drift-correction
-#                                   method for all QC-based batches and/or
-#                                   ONE for all QC-free batches (never a different method per batch),
-#                                   from several fitting candidates (LOESS at several spans, Huber
-#                                   regression at several k, a flat/no-op baseline), using evidence
-#                                   pooled across all batches in that tier: leave-one-out CV on QC
-#                                   for QC-based batches, held-out ltQC/Sample D-ratio for QC-free
-#                                   batches fit on samples. Returns a list of corrected per-batch SEs.
+# select_qc_candidate_per_batch()    — for each batch independently, evaluates per-feature
+#                                      LOO-CV-on-QC scores and picks that batch's own winning
+#                                      candidate; extracted from auto_select_drift_correction() so
+#                                      it can be reused for any basis
+# select_sample_candidate_per_batch() — same idea, per batch, using held-out ltQC/Sample D-ratio
+#                                      for a samples-based pick
+# auto_select_drift_correction() — basis-parameterized (qc/samples/hybrid): for each eligible
+#                                   QC-based batch, and each eligible QC-free batch, independently
+#                                   selects its OWN best drift-correction method (a different
+#                                   method per batch is expected, not pooled into one shared
+#                                   winner), from several fitting candidates (LOESS at several
+#                                   spans, Huber regression at several k, a flat/no-op baseline),
+#                                   using that batch's own evidence: leave-one-out CV on its own QC
+#                                   for QC-based batches, held-out ltQC/Sample D-ratio on its own
+#                                   samples for QC-free batches. Returns list(batches=, log=): batches
+#                                   is the list of corrected per-batch SEs, log is a data.frame (one
+#                                   row per batch x candidate) of the full selection record, for the
+#                                   caller to save alongside the corrected output.
 
 split_by_batch <- function(se) {
   batches <- unique(colData(se)$Batch)
@@ -716,8 +722,9 @@ apply_drift_candidate_to_batch <- function(mat, train_idx, inj, predict_fn, min_
 # via CV rather than sharing one value dataset-wide.
 #
 # Deliberately different from auto_select_drift_correction(), which pools
-# evidence across features (and batches) to pick ONE shared winner for
-# reportability -- this is intentionally per-feature instead. That's safe
+# evidence across features WITHIN a batch to pick one shared winner for that
+# batch (batches themselves are never pooled together, each selects
+# independently) -- this is intentionally per-feature instead. That's safe
 # specifically because it only ever runs on QC: QC points are pure technical
 # replicates, so a flexible per-feature fit has nothing biological to
 # overfit, unlike a samples-based fit would (see loess_correct_batch_samples()
@@ -797,134 +804,178 @@ classify_drift_tier <- function(se_b, min_qc_per_batch, min_ltqc_validate) {
   "none"
 }
 
-# Pools per-feature LOO-CV-on-QC scores across `eligible_idx` (indices into
-# `batches`) for each candidate, aggregates by column-median, and returns the
-# single best-scoring candidate (or NULL if none could be evaluated).
-# Also prints, per candidate, the pooled ltQC/Sample D-ratio -- informational
-# only, does not affect selection: LOO-CV on QC is already a legitimate,
-# non-circular criterion, so D-ratio here is only a sanity-check
+# For EACH batch in `eligible_idx` (indices into `batches`) independently:
+# evaluates every candidate via per-feature LOO-CV on that batch's own QC
+# data, aggregates by median, and picks that batch's own best-scoring
+# candidate. No evidence is borrowed from other batches -- deliberately, per
+# the same reasoning as loess_correct_batch_hybrid()'s per-batch tier
+# decision: each batch's own correction should draw only on its own
+# evidence, not a shared pooled estimate that could mask a batch behaving
+# differently from the rest.
+# Returns list(winners=, log=): winners is a list of winners, one per entry
+# in eligible_idx (NULL for a batch where no candidate could be evaluated --
+# too few QC observations per feature); log is a data.frame with one row per
+# (batch, candidate) -- batch, tier, candidate, cv_score, ltqc_dratio,
+# selected -- for the caller to save alongside the corrected output (see
+# notame-workflow.r's per-method output writing), so the reasoning behind
+# each batch's choice survives past the console log.
+# Also prints, per batch and candidate, that batch's ltQC/Sample D-ratio --
+# informational only, does not affect selection: LOO-CV on QC is already a
+# legitimate, non-circular criterion, so D-ratio here is only a sanity-check
 # cross-reference (same reasoning as ltqc_permanova_* alongside
 # qc_permanova_* in qc_metrics.R -- if LOO-CV improves but D-ratio disagrees,
 # that disagreement is itself worth noticing, not something to average away).
-select_pooled_qc_candidate <- function(batches, batch_names, eligible_idx, candidates, min_cv_obs) {
-  if (length(eligible_idx) == 0) return(NULL)
+select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, candidates, min_cv_obs) {
+  if (length(eligible_idx) == 0) return(list(winners = list(), log = NULL))
 
   message("==> QC-based batches (", length(eligible_idx), "): evaluating ",
-          length(candidates), " drift-correction candidate(s) via LOO-CV on QC, pooled across batches")
-  pooled <- do.call(rbind, lapply(eligible_idx, function(bi) {
+          length(candidates), " drift-correction candidate(s) via LOO-CV on QC, per batch")
+
+  winners  <- vector("list", length(eligible_idx))
+  names(winners) <- batch_names[eligible_idx]
+  log_rows <- list()
+
+  for (row in seq_along(eligible_idx)) {
+    bi     <- eligible_idx[row]
     se_b   <- batches[[bi]]
     qc_idx <- which(colData(se_b)$QC == "QC")
-    raw_feature_cv_scores(assay(se_b, 1), qc_idx, as.numeric(colData(se_b)$Injection_order),
-                           candidates, min_obs = min_cv_obs,
-                           progress_label = paste0("Batch ", batch_names[bi]))
-  }))
-  agg <- apply(pooled, 2, median, na.rm = TRUE)
+    inj    <- as.numeric(colData(se_b)$Injection_order)
 
-  qc_dratios <- vapply(candidates, function(cand) {
-    per_batch <- vapply(eligible_idx, function(bi) {
-      se_b   <- batches[[bi]]
-      qc_idx <- which(colData(se_b)$QC == "QC")
-      mat_trial <- apply_drift_candidate_to_batch(assay(se_b, 1), qc_idx,
-                                                    as.numeric(colData(se_b)$Injection_order),
+    cv_scores <- raw_feature_cv_scores(assay(se_b, 1), qc_idx, inj, candidates,
+                                        min_obs = min_cv_obs,
+                                        progress_label = paste0("Batch ", batch_names[bi]))
+    agg <- apply(cv_scores, 2, median, na.rm = TRUE)
+
+    qc_dratios <- vapply(candidates, function(cand) {
+      mat_trial <- apply_drift_candidate_to_batch(assay(se_b, 1), qc_idx, inj,
                                                     cand$predict_fn, min_obs = min_cv_obs,
                                                     quiet = TRUE)
       se_trial <- se_b
       assay(se_trial, 1, withDimnames = FALSE) <- mat_trial
       eval_ltqc_dratio(se_trial)
     }, numeric(1))
-    suppressWarnings(median(per_batch, na.rm = TRUE))
-  }, numeric(1))
 
-  for (ci in seq_along(candidates))
-    message("    ", candidates[[ci]]$name, ": pooled LOO-CV score = ",
-            if (is.na(agg[ci])) "NA" else signif(agg[ci], 4),
-            ", ltQC/Sample D-ratio = ",
-            if (is.na(qc_dratios[ci])) "NA (no ltQC available)" else round(qc_dratios[ci], 4))
+    winner_ci <- if (all(is.na(agg))) NA_integer_ else which.min(agg)
 
-  if (all(is.na(agg))) {
-    message("  No candidate could be evaluated across QC-based batches",
-            " (too few QC observations per feature)")
-    return(NULL)
+    for (ci in seq_along(candidates)) {
+      message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name, ": LOO-CV score = ",
+              if (is.na(agg[ci])) "NA" else signif(agg[ci], 4),
+              ", ltQC/Sample D-ratio = ",
+              if (is.na(qc_dratios[ci])) "NA (no ltQC available)" else round(qc_dratios[ci], 4))
+      log_rows[[length(log_rows) + 1]] <- data.frame(
+        batch = batch_names[bi], tier = "qc", candidate = candidates[[ci]]$name,
+        cv_score = agg[ci], ltqc_dratio = qc_dratios[ci],
+        selected = !is.na(winner_ci) && ci == winner_ci,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    if (is.na(winner_ci)) {
+      message("  Batch ", batch_names[bi], ": no candidate could be evaluated",
+              " (too few QC observations per feature)")
+      next
+    }
+    winner <- candidates[[winner_ci]]
+    message("  Batch ", batch_names[bi], ": selected ", winner$name,
+            " (LOO-CV score = ", signif(agg[winner_ci], 4), ")")
+    winners[[row]] <- winner
   }
-  winner <- candidates[[which.min(agg)]]
-  message("  Selected for all QC-based batches: ", winner$name,
-          " (pooled LOO-CV score = ", signif(min(agg, na.rm = TRUE), 4), ")")
-  winner
+  list(winners = winners, log = do.call(rbind, log_rows))
 }
 
-# Pools ltQC/Sample D-ratio (after trial-applying each candidate on Sample
-# rows) across `eligible_idx` batches, aggregates by column-median, and
-# returns the single best-scoring candidate (or NULL if none could be
-# evaluated). `eligible_idx` should already be restricted to batches with
-# enough ltQC to compute a D-ratio at all -- this function only picks the
-# winner, it doesn't decide which batches the winner gets applied to (that's
-# the caller's job, since it differs by basis -- see
-# auto_select_drift_correction()).
-select_pooled_sample_candidate <- function(batches, batch_names, eligible_idx, candidates, min_cv_obs) {
-  if (length(eligible_idx) == 0) return(NULL)
+# Same idea as select_qc_candidate_per_batch(), for the samples-based tier:
+# for EACH batch in `eligible_idx` independently, trial-applies every
+# candidate on that batch's own Sample rows, scores by that batch's own
+# held-out ltQC/Sample D-ratio, and picks that batch's own best-scoring
+# candidate. `eligible_idx` should already be restricted to batches with
+# enough ltQC to compute a D-ratio at all. Returns list(winners=, log=), same
+# shape as select_qc_candidate_per_batch() (log$cv_score is always NA here --
+# this tier has no CV score, only D-ratio).
+select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx, candidates, min_cv_obs) {
+  if (length(eligible_idx) == 0) return(list(winners = list(), log = NULL))
 
   message("==> QC-free batches (", length(eligible_idx), "): evaluating ",
           length(candidates), " candidate(s) (fit on samples) via held-out ltQC/Sample",
-          " D-ratio, pooled across batches")
-  dr_mat <- matrix(NA_real_, length(eligible_idx), length(candidates))
+          " D-ratio, per batch")
+
+  winners  <- vector("list", length(eligible_idx))
+  names(winners) <- batch_names[eligible_idx]
+  log_rows <- list()
+
   for (row in seq_along(eligible_idx)) {
-    se_b       <- batches[[eligible_idx[row]]]
+    bi         <- eligible_idx[row]
+    se_b       <- batches[[bi]]
     sample_idx <- which(colData(se_b)$QC == "Sample")
     inj        <- as.numeric(colData(se_b)$Injection_order)
-    for (ci in seq_along(candidates)) {
+
+    dratios <- vapply(candidates, function(cand) {
       mat_trial <- apply_drift_candidate_to_batch(assay(se_b, 1), sample_idx, inj,
-                                                    candidates[[ci]]$predict_fn,
-                                                    min_obs = min_cv_obs, quiet = TRUE)
+                                                    cand$predict_fn, min_obs = min_cv_obs, quiet = TRUE)
       se_trial <- se_b
       assay(se_trial, 1, withDimnames = FALSE) <- mat_trial
-      dr_mat[row, ci] <- eval_ltqc_dratio(se_trial)
-    }
-  }
-  agg <- apply(dr_mat, 2, median, na.rm = TRUE)
-  for (ci in seq_along(candidates))
-    message("    ", candidates[[ci]]$name, ": pooled ltQC/Sample D-ratio = ",
-            if (is.na(agg[ci])) "NA" else round(agg[ci], 4))
+      eval_ltqc_dratio(se_trial)
+    }, numeric(1))
 
-  if (all(is.na(agg))) {
-    message("  No candidate's ltQC/Sample D-ratio could be computed across QC-free batches")
-    return(NULL)
+    winner_ci <- if (all(is.na(dratios))) NA_integer_ else which.min(dratios)
+
+    for (ci in seq_along(candidates)) {
+      message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name,
+              ": ltQC/Sample D-ratio = ", if (is.na(dratios[ci])) "NA" else round(dratios[ci], 4))
+      log_rows[[length(log_rows) + 1]] <- data.frame(
+        batch = batch_names[bi], tier = "sample", candidate = candidates[[ci]]$name,
+        cv_score = NA_real_, ltqc_dratio = dratios[ci],
+        selected = !is.na(winner_ci) && ci == winner_ci,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    if (is.na(winner_ci)) {
+      message("  Batch ", batch_names[bi], ": no candidate's ltQC/Sample D-ratio could be computed")
+      next
+    }
+    winner <- candidates[[winner_ci]]
+    message("  Batch ", batch_names[bi], ": selected ", winner$name,
+            " (ltQC/Sample D-ratio = ", round(dratios[winner_ci], 4), ")")
+    winners[[row]] <- winner
   }
-  winner <- candidates[[which.min(agg)]]
-  message("  Selected for all QC-free batches: ", winner$name,
-          " (pooled ltQC/Sample D-ratio = ", round(min(agg, na.rm = TRUE), 4), ")")
-  winner
+  list(winners = winners, log = do.call(rbind, log_rows))
 }
 
-# One drift-correction method is selected for the whole dataset, not per
-# batch -- deliberately. Evidence is pooled ACROSS all eligible batches
-# before picking a winner, so the decision draws on far more data than any
-# single batch could offer, and every batch that gets corrected ends up
-# using the same, consistent method -- no patchwork of different techniques
-# across batches.
+# A drift-correction method is selected independently for EACH batch, not
+# pooled across batches -- each batch's own correction draws only on its own
+# evidence (LOO-CV on its own QC, or held-out ltQC/Sample D-ratio on its own
+# samples), never borrowed from other batches. This was a deliberate change
+# from an earlier pooled design (one shared winner per tier, chosen from
+# evidence combined across all eligible batches): pooling trades away
+# per-batch accuracy for statistical power on the selection itself, which
+# reads as more defensible on paper but is methodologically inconsistent
+# with actually applying the correction per batch. Per-batch selection costs
+# some of that pooled power -- CV on a single batch's QC is a noisier basis
+# for picking among candidates than CV pooled across several batches -- but
+# is more consistent: no batch's chosen method depends on what other
+# batches' data happened to look like.
 #
-# `basis` controls which batches are eligible to contribute to (and, for
-# "hybrid"/"qc", to receive) each pooled decision:
-#   "hybrid"  -- today's original behaviour: batches are tiered by QC/ltQC
-#                coverage (classify_drift_tier()); QC-tier batches pool into
-#                the QC-anchored selection, sample-tier batches pool into
-#                the samples-based selection, and each tier's winner is only
-#                applied back to batches in that same tier. A "none"-tier
-#                batch (insufficient QC AND ltQC) is left uncorrected.
-#   "qc"      -- every batch with >= min_qc_per_batch QC contributes to (and
-#                receives) the QC-anchored selection; no samples-based
-#                selection is attempted at all. Batches below the threshold
-#                are left uncorrected, with no samples-based fallback --
-#                this is what makes basis="qc" strictly QC-only, unlike
-#                "hybrid".
-#   "samples" -- only batches with >= min_ltqc_validate ltQC contribute to
-#                the samples-based selection (there needs to be some
-#                held-out evidence to pick a winner from at all), but once a
-#                winner is chosen it is applied to EVERY batch, not just the
-#                ltQC-eligible ones -- unlike "hybrid", there is no per-batch
-#                validate-or-revert gate here; ltQC only decides which
-#                shared candidate to use, not whether any given batch gets
-#                corrected. If no batch has enough ltQC to select a winner
-#                at all, every batch is left uncorrected.
+# `basis` controls which batches are eligible to select (and receive) their
+# own candidate:
+#   "hybrid"  -- batches are tiered by QC/ltQC coverage (classify_drift_tier());
+#                QC-tier batches each independently select from the
+#                QC-anchored candidates, sample-tier batches each
+#                independently select from the samples-based candidates. A
+#                "none"-tier batch (insufficient QC AND ltQC) is left
+#                uncorrected.
+#   "qc"      -- every batch with >= min_qc_per_batch QC independently
+#                selects (and receives) its own QC-anchored candidate; no
+#                samples-based selection is attempted at all. Batches below
+#                the threshold are left uncorrected, with no samples-based
+#                fallback -- this is what makes basis="qc" strictly QC-only,
+#                unlike "hybrid".
+#   "samples" -- every batch with >= min_ltqc_validate ltQC independently
+#                selects (and receives) its own samples-based candidate,
+#                using its own held-out ltQC/Sample D-ratio. A batch below
+#                that threshold has no held-out evidence to select from at
+#                all and is left uncorrected -- unlike the old pooled
+#                design, there is no shared winner from other batches to
+#                fall back on.
 auto_select_drift_correction <- function(data,
                                           basis               = c("hybrid", "qc", "samples"),
                                           loess_spans        = c(0.5, 0.75, 0.9),
@@ -962,25 +1013,28 @@ auto_select_drift_correction <- function(data,
     qc_eligible_idx     <- integer(0)
     qc_apply_idx        <- integer(0)
     sample_eligible_idx <- which(n_ltqc >= min_ltqc_validate)
-    sample_apply_idx    <- seq_along(batches)  # winner applied to every batch, once chosen -- see docs above
+    sample_apply_idx    <- sample_eligible_idx  # per-batch: only batches that selected for themselves
     for (bi in seq_along(batches))
       message("  Batch ", batch_names[bi], ": ", n_ltqc[bi], " ltQC sample(s) (",
-              if (bi %in% sample_eligible_idx) paste0(">= ", min_ltqc_validate, ", contributes to candidate selection")
-              else paste0("< ", min_ltqc_validate, ", does not contribute to candidate selection"), ")")
+              if (bi %in% sample_eligible_idx) paste0(">= ", min_ltqc_validate, ", selects its own candidate")
+              else paste0("< ", min_ltqc_validate, ", left uncorrected"), ")")
   }
 
   qc_candidates <- build_drift_candidates(loess_spans, huber_ks, include_flat = TRUE)
-  qc_winner <- select_pooled_qc_candidate(batches, batch_names, qc_eligible_idx, qc_candidates, min_cv_obs)
+  qc_result  <- select_qc_candidate_per_batch(batches, batch_names, qc_eligible_idx, qc_candidates, min_cv_obs)
+  qc_winners <- qc_result$winners
 
   sample_candidates <- build_drift_candidates(sample_loess_spans, sample_huber_ks, include_flat = TRUE)
-  sample_winner <- select_pooled_sample_candidate(batches, batch_names, sample_eligible_idx,
-                                                   sample_candidates, min_cv_obs)
-  if (is.null(sample_winner)) sample_apply_idx <- integer(0)  # nothing to apply
+  sample_result  <- select_sample_candidate_per_batch(batches, batch_names, sample_eligible_idx,
+                                                        sample_candidates, min_cv_obs)
+  sample_winners <- sample_result$winners
 
-  # --- Apply the chosen winner(s) to each batch ---
+  # --- Apply each batch's own selected candidate ---
   message("==> Applying selected method(s) per batch")
   for (bi in seq_along(batches)) {
     se_b <- batches[[bi]]
+    qc_winner     <- qc_winners[[match(bi, qc_eligible_idx)]]
+    sample_winner <- sample_winners[[match(bi, sample_eligible_idx)]]
     if (bi %in% qc_apply_idx && !is.null(qc_winner)) {
       message("  Batch ", batch_names[bi], ": applying ", qc_winner$name, " (QC-based)")
       qc_idx <- which(colData(se_b)$QC == "QC")
@@ -988,7 +1042,7 @@ auto_select_drift_correction <- function(data,
                                              as.numeric(colData(se_b)$Injection_order),
                                              qc_winner$predict_fn, min_obs = min_cv_obs)
       assay(se_b, 1, withDimnames = FALSE) <- mat
-    } else if (bi %in% sample_apply_idx) {
+    } else if (bi %in% sample_apply_idx && !is.null(sample_winner)) {
       message("  Batch ", batch_names[bi], ": applying ", sample_winner$name,
               " (QC-free, fit on samples)")
       sample_idx <- which(colData(se_b)$QC == "Sample")
@@ -1009,5 +1063,5 @@ auto_select_drift_correction <- function(data,
     batches[[bi]] <- se_b
   }
 
-  batches
+  list(batches = batches, log = do.call(rbind, list(qc_result$log, sample_result$log)))
 }

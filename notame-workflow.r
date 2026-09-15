@@ -320,12 +320,11 @@ if both are set for the same parameter.
                         Default: 4
 
   AUTO_MIN_LTQC_VALIDATE  Same role as DRIFT_MIN_LTQC_VALIDATE, for drift_method=auto: minimum
-                        ltQC samples a batch needs to contribute to the samples-based candidate
-                        selection at all. Under basis=samples, once a winning candidate is chosen
-                        it is applied to every batch regardless of this threshold — it only
-                        affects which batches help pick the winner. Under basis=hybrid (and
-                        basis=qc, where this pool isn't used), batches with fewer are left
-                        uncorrected.
+                        ltQC samples a batch needs to select (and receive) its own samples-based
+                        candidate at all. Under basis=samples, hybrid, and qc alike, a batch below
+                        this threshold has no held-out evidence to select from and is left
+                        uncorrected — each batch's selection depends only on its own ltQC/QC
+                        count, never on other batches.
                         Default: 3
 
   AUTO_MIN_CV_OBS       Minimum finite training observations (QC, or samples for the ltQC-validated
@@ -337,7 +336,7 @@ if both are set for the same parameter.
                         drift_method=huber's QC-based fit (basis=qc, or basis=hybrid's QC branch).
                         Fixed (shared across every feature), not auto-searched — see HUBER_QC_CV_KS
                         below for per-feature CV selection within basis=qc/hybrid, or
-                        AUTO_HUBER_KS/drift_method=auto for a dataset-wide CV-chosen k instead.
+                        AUTO_HUBER_KS/drift_method=auto for a per-batch CV-chosen k instead.
                         Lower = more robust to outlier QC points but less statistically efficient;
                         1.345 is MASS::rlm's own default (~95% efficiency under Gaussian errors).
                         Default: 1.345
@@ -1090,6 +1089,13 @@ for (method in CORRECTION_METHODS) {
 
   combined <- result$post
   obs_mask <- result$obs_mask
+
+  # drift_method=auto's per-batch candidate selection (one row per batch x
+  # candidate: CV score, ltQC/Sample D-ratio, which one was selected) --
+  # otherwise only ever visible in the console log, not saved anywhere.
+  if (!is.null(result$drift_log)) {
+    write.csv(result$drift_log, file.path(method_out, "auto_drift_selection.csv"), row.names = FALSE)
+  }
 
   # Optional post-correction normalisation for dilution effects
   if (NORMALIZATION == "pqn") {

@@ -293,19 +293,19 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   if (entry$kind == "atomic") return(entry$fn(data, params))
 
   # --- 1. Drift step ---
+  drift_log <- NULL  # only set for drift_method="auto" -- see below
   if (drift_method == "none") {
     combined <- data
   } else if (drift_method == "auto") {
-    combined <- merge_notame_sets(
-      auto_select_drift_correction(data, basis = basis,
+    auto_result <- auto_select_drift_correction(data, basis = basis,
         loess_spans = params$auto_loess_spans, huber_ks = params$auto_huber_ks,
         sample_loess_spans = params$auto_sample_loess_spans,
         sample_huber_ks = params$auto_sample_huber_ks,
         min_qc_per_batch = params$auto_min_qc_per_batch,
         min_ltqc_validate = params$auto_min_ltqc_validate,
-        min_cv_obs = params$auto_min_cv_obs),
-      merge = "samples"
-    )
+        min_cv_obs = params$auto_min_cv_obs)
+    drift_log <- auto_result$log
+    combined <- merge_notame_sets(auto_result$batches, merge = "samples")
   } else {
     drift_fn <- resolve_drift_fn(drift_method, basis)
     combined <- merge_notame_sets(
@@ -330,7 +330,7 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   if (entry$kind == "none") {
     message("==> Imputation (RF on corrected data)")
     combined <- rf_impute_corrected(combined, obs_mask)
-    return(list(pre = combined, post = combined, obs_mask = obs_mask))
+    return(list(pre = combined, post = combined, obs_mask = obs_mask, drift_log = drift_log))
   }
 
   # LoD/2 fill before a batch method that requires a complete matrix
@@ -357,7 +357,7 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
 
-  list(pre = pre, post = combined, obs_mask = obs_mask)
+  list(pre = pre, post = combined, obs_mask = obs_mask, drift_log = drift_log)
 }
 
 correct_none <- function(data) {
