@@ -278,7 +278,7 @@ if both are set for the same parameter.
                         D-ratio instead only credits a disproportionate improvement in ltQC
                         relative to Sample. Batches with fewer ltQC than this have no way to
                         validate the trial and are left uncorrected.
-                        Default: 3
+                        Default: 2
 
   DRIFT_HYBRID_VALIDATE  Set to FALSE to skip the ltQC validation above entirely under
                         basis=hybrid: any batch below DRIFT_MIN_QC_PER_BATCH then always gets the
@@ -325,7 +325,7 @@ if both are set for the same parameter.
                         this threshold has no held-out evidence to select from and is left
                         uncorrected — each batch's selection depends only on its own ltQC/QC
                         count, never on other batches.
-                        Default: 3
+                        Default: 2
 
   AUTO_MIN_CV_OBS       Minimum finite training observations (QC, or samples for the ltQC-validated
                         pool) a feature needs before drift_method=auto attempts to fit any
@@ -602,7 +602,7 @@ LOESS_QC_SPAN             <- as.numeric(get_env("LOESS_QC_SPAN", "0.75"))
 LOESS_SAMPLE_SPAN         <- as.numeric(get_env("LOESS_SAMPLE_SPAN", "0.9"))
 DRIFT_SAMPLE_MIN_OBS      <- as.integer(get_env("DRIFT_SAMPLE_MIN_OBS", "10"))
 DRIFT_MIN_QC_PER_BATCH    <- as.integer(get_env("DRIFT_MIN_QC_PER_BATCH", "4"))
-DRIFT_MIN_LTQC_VALIDATE   <- as.integer(get_env("DRIFT_MIN_LTQC_VALIDATE", "3"))
+DRIFT_MIN_LTQC_VALIDATE   <- as.integer(get_env("DRIFT_MIN_LTQC_VALIDATE", "2"))
 DRIFT_HYBRID_VALIDATE     <- as.logical(get_env("DRIFT_HYBRID_VALIDATE", "TRUE"))
 cordbat_ref_env   <- get_env("CORDBAT_REF_BATCH", "")
 CORDBAT_REF_BATCH <- if (cordbat_ref_env == "") NULL else cordbat_ref_env
@@ -637,7 +637,7 @@ AUTO_HUBER_KS           <- parse_num_list(get_env("AUTO_HUBER_KS",           "1.
 AUTO_SAMPLE_LOESS_SPANS <- parse_num_list(get_env("AUTO_SAMPLE_LOESS_SPANS", "0.3,0.6,0.9"))
 AUTO_SAMPLE_HUBER_KS    <- parse_num_list(get_env("AUTO_SAMPLE_HUBER_KS",    "1.0,1.345,2.0"))
 AUTO_MIN_QC_PER_BATCH   <- as.integer(get_env("AUTO_MIN_QC_PER_BATCH",  "4"))
-AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "3"))
+AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "2"))
 AUTO_MIN_CV_OBS         <- as.integer(get_env("AUTO_MIN_CV_OBS",       "4"))
 HUBER_QC_K     <- as.numeric(get_env("HUBER_QC_K",     "1.345"))
 HUBER_SAMPLE_K <- as.numeric(get_env("HUBER_SAMPLE_K", "1.345"))

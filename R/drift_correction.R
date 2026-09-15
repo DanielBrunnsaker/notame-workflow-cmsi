@@ -679,6 +679,56 @@ raw_feature_cv_scores <- function(mat, train_idx, inj, candidates, min_obs = 4,
   scores
 }
 
+# Held-out prediction score for one feature, one candidate: fit once on
+# (x_train, y_train), predict at x_test, mean relative squared error against
+# the actually-observed y_test -- ((y_test_i - pred_i) / median(y_train))^2,
+# averaged over all test points. Not leave-one-out: train and test are a
+# single fixed split (e.g. Sample vs ltQC), since test points here are
+# already genuinely held out (never in the training set) -- no need to
+# iteratively remove them one at a time the way cv_score_feature() does
+# within a single group. This means it has no minimum-size requirement on
+# the test side beyond >=1 point (unlike LOO-CV, which needs enough points
+# left over after removing one to still fit a candidate) -- deliberately, so
+# it stays usable even when ltQC is as small as 2 per batch. Returns NA if
+# the candidate couldn't be evaluated at all.
+holdout_score_feature <- function(x_train, y_train, x_test, y_test, predict_fn) {
+  pred <- tryCatch(predict_fn(x_train, y_train, x_test), error = function(e) NULL)
+  if (is.null(pred) || length(pred) != length(x_test) || any(!is.finite(pred))) return(NA_real_)
+  denom <- median(y_train)
+  if (!is.finite(denom) || denom == 0) return(NA_real_)
+  mean(((y_test - pred) / denom)^2)
+}
+
+# Raw per-feature held-out scores for every candidate, fit on train_idx and
+# evaluated on test_idx -- same features x candidates matrix shape as
+# raw_feature_cv_scores(), same progress-reporting convention. min_obs
+# applies only to the training side (need enough points to fit a candidate
+# at all); the test side only needs >=1 finite, positive observation.
+raw_feature_holdout_scores <- function(mat, train_idx, test_idx, inj, candidates, min_obs = 4,
+                                        progress_label = NULL) {
+  x_tr   <- inj[train_idx]
+  x_te   <- inj[test_idx]
+  n_feat <- nrow(mat)
+  scores <- matrix(NA_real_, n_feat, length(candidates))
+  progress_every <- max(1L, round(n_feat / 10))
+  prefix <- if (is.null(progress_label)) "  " else paste0("  ", progress_label, ": ")
+  for (i in seq_len(n_feat)) {
+    y_tr <- as.numeric(mat[i, train_idx])
+    y_te <- as.numeric(mat[i, test_idx])
+    ok_tr <- is.finite(y_tr) & is.finite(x_tr) & y_tr > 0
+    ok_te <- is.finite(y_te) & is.finite(x_te) & y_te > 0
+    if (sum(ok_tr) >= min_obs && sum(ok_te) >= 1) {
+      for (ci in seq_along(candidates))
+        scores[i, ci] <- holdout_score_feature(x_tr[ok_tr], y_tr[ok_tr], x_te[ok_te], y_te[ok_te],
+                                                candidates[[ci]]$predict_fn)
+    }
+    if (i %% progress_every == 0 || i == n_feat)
+      message(prefix, "held-out ltQC progress: ", round(100 * i / n_feat), "% (", i, "/", n_feat, " features)")
+  }
+  colnames(scores) <- vapply(candidates, `[[`, character(1), "name")
+  scores
+}
+
 # Fits predict_fn on train_idx columns (per feature) and applies the
 # resulting correction ratio to every column -- same normalisation
 # convention as loess_correct_batch()/loess_correct_batch_samples()
@@ -815,10 +865,10 @@ classify_drift_tier <- function(se_b, min_qc_per_batch, min_ltqc_validate) {
 # Returns list(winners=, log=): winners is a list of winners, one per entry
 # in eligible_idx (NULL for a batch where no candidate could be evaluated --
 # too few QC observations per feature); log is a data.frame with one row per
-# (batch, candidate) -- batch, tier, candidate, cv_score, ltqc_dratio,
-# selected -- for the caller to save alongside the corrected output (see
-# notame-workflow.r's per-method output writing), so the reasoning behind
-# each batch's choice survives past the console log.
+# (batch, candidate) -- batch, tier, candidate, score_method, prediction_score,
+# ltqc_dratio, selected -- for the caller to save alongside the corrected
+# output (see notame-workflow.r's per-method output writing), so the
+# reasoning behind each batch's choice survives past the console log.
 # Also prints, per batch and candidate, that batch's ltQC/Sample D-ratio --
 # informational only, does not affect selection: LOO-CV on QC is already a
 # legitimate, non-circular criterion, so D-ratio here is only a sanity-check
@@ -864,7 +914,7 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
               if (is.na(qc_dratios[ci])) "NA (no ltQC available)" else round(qc_dratios[ci], 4))
       log_rows[[length(log_rows) + 1]] <- data.frame(
         batch = batch_names[bi], tier = "qc", candidate = candidates[[ci]]$name,
-        cv_score = agg[ci], ltqc_dratio = qc_dratios[ci],
+        score_method = "loocv_qc", prediction_score = agg[ci], ltqc_dratio = qc_dratios[ci],
         selected = !is.na(winner_ci) && ci == winner_ci,
         stringsAsFactors = FALSE
       )
@@ -884,19 +934,37 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
 }
 
 # Same idea as select_qc_candidate_per_batch(), for the samples-based tier:
-# for EACH batch in `eligible_idx` independently, trial-applies every
-# candidate on that batch's own Sample rows, scores by that batch's own
-# held-out ltQC/Sample D-ratio, and picks that batch's own best-scoring
-# candidate. `eligible_idx` should already be restricted to batches with
-# enough ltQC to compute a D-ratio at all. Returns list(winners=, log=), same
-# shape as select_qc_candidate_per_batch() (log$cv_score is always NA here --
-# this tier has no CV score, only D-ratio).
+# for EACH batch in `eligible_idx` independently, fits every candidate on
+# that batch's own Sample rows and scores it by held-out prediction accuracy
+# against that batch's own ltQC points (never used in fitting) --
+# holdout_score_feature()/raw_feature_holdout_scores(), a genuine train/test
+# split rather than D-ratio. Picks that batch's own best-scoring candidate.
+#
+# D-ratio (MAD(ltQC)/MAD(Sample) after trial-applying the candidate) used to
+# be this tier's selection criterion, but it's a ratio, and a candidate can
+# improve a ratio by unilaterally shrinking either side of it -- specifically,
+# by over-smoothing the Sample data it's fit on, compressing real biological
+# variance along with any drift, which shrinks MAD(Sample) and makes D-ratio
+# look better even though the correction may have destroyed signal rather
+# than removed drift. The held-out prediction score doesn't have that
+# vulnerability (it's an absolute prediction error, not a ratio, so
+# compressing Sample's own dispersion doesn't mechanically improve it), so it
+# now decides the winner; D-ratio is still computed and logged, but purely
+# informational -- same role it already has for the QC tier.
+#
+# `eligible_idx` should already be restricted to batches with enough ltQC to
+# evaluate at all (>= 1 -- unlike LOO-CV, held-out scoring has no minimum
+# training-set-minus-one requirement on the ltQC side, so this works fine
+# even with as few as 2 ltQC per batch; AUTO_MIN_LTQC_VALIDATE/
+# DRIFT_MIN_LTQC_VALIDATE is a separate, configurable eligibility gate, not a
+# requirement of this scoring method itself). Returns list(winners=, log=),
+# same shape as select_qc_candidate_per_batch().
 select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx, candidates, min_cv_obs) {
   if (length(eligible_idx) == 0) return(list(winners = list(), log = NULL))
 
   message("==> QC-free batches (", length(eligible_idx), "): evaluating ",
-          length(candidates), " candidate(s) (fit on samples) via held-out ltQC/Sample",
-          " D-ratio, per batch")
+          length(candidates), " candidate(s) (fit on samples) via held-out ltQC prediction",
+          " score, per batch")
 
   winners  <- vector("list", length(eligible_idx))
   names(winners) <- batch_names[eligible_idx]
@@ -906,7 +974,13 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
     bi         <- eligible_idx[row]
     se_b       <- batches[[bi]]
     sample_idx <- which(colData(se_b)$QC == "Sample")
+    ltqc_idx   <- which(colData(se_b)$QC == "ltQC")
     inj        <- as.numeric(colData(se_b)$Injection_order)
+
+    holdout_scores <- raw_feature_holdout_scores(assay(se_b, 1), sample_idx, ltqc_idx, inj, candidates,
+                                                  min_obs = min_cv_obs,
+                                                  progress_label = paste0("Batch ", batch_names[bi]))
+    agg <- apply(holdout_scores, 2, median, na.rm = TRUE)
 
     dratios <- vapply(candidates, function(cand) {
       mat_trial <- apply_drift_candidate_to_batch(assay(se_b, 1), sample_idx, inj,
@@ -916,26 +990,28 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
       eval_ltqc_dratio(se_trial)
     }, numeric(1))
 
-    winner_ci <- if (all(is.na(dratios))) NA_integer_ else which.min(dratios)
+    winner_ci <- if (all(is.na(agg))) NA_integer_ else which.min(agg)
 
     for (ci in seq_along(candidates)) {
-      message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name,
-              ": ltQC/Sample D-ratio = ", if (is.na(dratios[ci])) "NA" else round(dratios[ci], 4))
+      message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name, ": held-out ltQC score = ",
+              if (is.na(agg[ci])) "NA" else signif(agg[ci], 4),
+              ", ltQC/Sample D-ratio = ",
+              if (is.na(dratios[ci])) "NA" else round(dratios[ci], 4))
       log_rows[[length(log_rows) + 1]] <- data.frame(
         batch = batch_names[bi], tier = "sample", candidate = candidates[[ci]]$name,
-        cv_score = NA_real_, ltqc_dratio = dratios[ci],
+        score_method = "holdout_ltqc", prediction_score = agg[ci], ltqc_dratio = dratios[ci],
         selected = !is.na(winner_ci) && ci == winner_ci,
         stringsAsFactors = FALSE
       )
     }
 
     if (is.na(winner_ci)) {
-      message("  Batch ", batch_names[bi], ": no candidate's ltQC/Sample D-ratio could be computed")
+      message("  Batch ", batch_names[bi], ": no candidate's held-out ltQC score could be computed")
       next
     }
     winner <- candidates[[winner_ci]]
     message("  Batch ", batch_names[bi], ": selected ", winner$name,
-            " (ltQC/Sample D-ratio = ", round(dratios[winner_ci], 4), ")")
+            " (held-out ltQC score = ", signif(agg[winner_ci], 4), ")")
     winners[[row]] <- winner
   }
   list(winners = winners, log = do.call(rbind, log_rows))
