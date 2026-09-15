@@ -602,6 +602,34 @@ eval_qc_homogeneity <- function(se, group = "QC") {
        permdisp_p   = disp_p)
 }
 
+# Median pairwise Pearson correlation among all samples of `group` (QC or
+# ltQC), on log2-transformed intensities, pooled across the whole dataset
+# rather than per batch. Report-only -- not used to select or optimize
+# anything, unlike D-ratio/dist_ratio elsewhere in this pipeline. This is the
+# classic QC-reproducibility metric from the untargeted metabolomics
+# literature (e.g. the original WaveICA paper's own headline number: "the
+# average Pearson correlation coefficients for all peaks of the QCS increased
+# from 0.872 to 0.972").
+#
+# Pooling across the whole dataset, rather than per batch, is deliberate: the
+# intended interpretation of this metric is "how consistent are my technical
+# replicates across the entire study" -- a pooled number will incidentally
+# still reflect any remaining batch effect (QCs from different batches
+# correlating worse than QCs within the same batch pulls the pooled median
+# down), which is a feature for an informational summary number, not a flaw.
+eval_qc_correlation <- function(se, group = "QC") {
+  idx <- which(colData(se)$QC == group)
+  if (length(idx) < 2) return(NA_real_)
+
+  mat     <- assay(se, 1)[, idx, drop = FALSE]
+  mat_log <- suppressWarnings(log2(mat))
+  mat_log[!is.finite(mat_log)] <- NA
+
+  cor_mat  <- suppressWarnings(cor(mat_log, use = "pairwise.complete.obs", method = "pearson"))
+  cor_vals <- cor_mat[lower.tri(cor_mat)]
+  median(cor_vals, na.rm = TRUE)
+}
+
 
 # Save per-feature QC metrics and a one-row summary for one correction method.
 # Files are written to interdir so results from multiple methods can be compared.
@@ -630,6 +658,11 @@ eval_qc_homogeneity <- function(se, group = "QC") {
 #                            ltQC counts) check for a remaining batch signature
 #   ltqc_permanova_p       — p-value; want > 0.05 (ltQC don't cluster by batch)
 #   ltqc_permdisp_p        — PERMDISP p-value; want > 0.05 (homogeneous ltQC spread)
+#   qc_median_correlation  — median pairwise Pearson correlation among QC samples
+#                            (log2 scale, pooled across the whole dataset); report-only,
+#                            the classic QC-reproducibility metric from the literature
+#   ltqc_median_correlation — as qc_median_correlation but on ltQC (unbiased, same
+#                            caveat as ltqc_permanova_r2 re: typical ltQC counts)
 #
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
@@ -684,6 +717,9 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
   summary_row$ltqc_permanova_r2 <- ltqc_homo$permanova_r2
   summary_row$ltqc_permanova_p  <- ltqc_homo$permanova_p
   summary_row$ltqc_permdisp_p   <- ltqc_homo$permdisp_p
+
+  summary_row$qc_median_correlation   <- round(eval_qc_correlation(se, group = "QC"),   4)
+  summary_row$ltqc_median_correlation <- round(eval_qc_correlation(se, group = "ltQC"), 4)
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method_id, ".csv")), row.names = FALSE)
 

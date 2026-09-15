@@ -274,7 +274,7 @@ BATCH_METHOD_REGISTRY <- list(
   waveica_v1 = list(kind = "complete", fn = function(se, p)
     run_waveica_v1(se, wf = p$waveica_v1_wf, alpha_grid = p$waveica_v1_alpha,
                     t_grid = p$waveica_v1_t, k_grid = p$waveica_v1_k, t2 = p$waveica_v1_t2,
-                    eval_group = p$waveica_v1_eval_group)),
+                    eval_group = p$waveica_v1_eval_group, obs_mask = p$obs_mask)),
   pmp_qcrsc = list(kind = "atomic", fn = function(data, p) correct_pmp_qcrsc(data)),
   serrf     = list(kind = "atomic", fn = function(data, p) correct_serrf(data, num = p$serrf_num_eff))
 )
@@ -317,6 +317,15 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   # Capture obs_mask after merge so column order matches combined
   obs_mask  <- !is.na(assay(combined, 1))
   n_batches <- length(unique(colData(combined)$Batch))
+
+  # Available to entry$fn via params$obs_mask below -- currently only read by
+  # select_waveica_v1_params()'s guard baseline (see its docstring), which
+  # needs the true pre-imputation missingness pattern to RF-impute a baseline
+  # the same way correct_none() does, rather than comparing against the
+  # LoD/2-imputed intermediate (which is not what "uncorrected" means
+  # anywhere else in this pipeline's reporting). Other registry fn's ignore
+  # this extra field.
+  params$obs_mask <- obs_mask
 
   if (entry$kind == "none") {
     message("==> Imputation (RF on corrected data)")
@@ -815,7 +824,8 @@ run_waveica_once <- function(data, alpha, cutoff, k, wf) {
 # keep this pipeline's N_CORES/foreach grid the only source of parallelism.
 # Without that, n_outer_workers x 2 processes would compete for the same
 # cores instead of actually parallelizing.
-select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eval_group = "ltQC") {
+select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eval_group = "ltQC",
+                                   obs_mask = NULL) {
   suppressPackageStartupMessages(library(foreach))
 
   grid <- expand.grid(alpha = alpha_grid, cutoff = cutoff_grid, k = k_grid)
@@ -830,7 +840,16 @@ select_waveica_params <- function(data, alpha_grid, cutoff_grid, k_grid, wf, eva
   message("  Auto-selecting WaveICA2.0 parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
-  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+  # See select_waveica_v1_params()'s matching comment: the guard baseline
+  # must be RF-imputed the same way correct_none() computes "uncorrected"
+  # for the summary table, not compared against `data`'s LoD/2-imputed
+  # intermediate -- otherwise the guard and the final report are measuring
+  # against two different, non-comparable baselines.
+  baseline_dist_ratio <- if (!is.null(obs_mask)) {
+    eval_dist_ratio(rf_impute_corrected(data, obs_mask), group1 = eval_group, group2 = "Sample")
+  } else {
+    eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+  }
 
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     options(mc.cores = 1)
@@ -898,7 +917,8 @@ correct_waveica <- function(data, alpha = 0.05, cutoff = 0.10, K = NA_real_, wf 
 
   message("==> WaveICA2.0 correction")
   assay(data, 1, withDimnames = FALSE) <- select_waveica_params(
-    data, alpha_grid = alpha, cutoff_grid = cutoff, k_grid = K, wf = wf, eval_group = eval_group
+    data, alpha_grid = alpha, cutoff_grid = cutoff, k_grid = K, wf = wf, eval_group = eval_group,
+    obs_mask = obs_mask
   )
 
   message("==> Imputation (RF on corrected data)")
@@ -982,7 +1002,8 @@ run_waveica_v1_once <- function(data, alpha, t, k, t2, wf) {
 # no internal parallel::mclapply() call (verified against source) -- so,
 # unlike select_waveica_params(), candidates here don't need mc.cores pinned
 # inside each outer foreach worker.
-select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, eval_group = "ltQC") {
+select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, eval_group = "ltQC",
+                                      obs_mask = NULL) {
   suppressPackageStartupMessages(library(foreach))
 
   grid <- expand.grid(alpha = alpha_grid, t = t_grid, k = k_grid)
@@ -997,7 +1018,25 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
   message("  Auto-selecting WaveICA (v1) parameters (", nrow(grid),
           " combination(s), evaluated against ", eval_group, "/Sample)")
 
-  baseline_dist_ratio <- eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+  # The guard baseline must be comparable to what "uncorrected" means
+  # everywhere else in this pipeline's reporting (correct_none(): RF-imputed,
+  # never LoD/2) -- not `data` itself, which by this point has already been
+  # through LoD/2's crude constant-fill (run_correction() imputes it before
+  # calling any "complete"-kind method, since WaveICA needs a complete
+  # matrix). Comparing candidates against a LoD/2-imputed baseline instead of
+  # the true RF-imputed uncorrected reference is what let a real run's guard
+  # reject every one of 60 candidates while the eventual (fallback) output
+  # compared favorably against the actual uncorrected row in the summary
+  # table -- the guard and the final report were measuring against two
+  # different "uncorrected" baselines. obs_mask (the true pre-imputation
+  # missingness pattern, threaded through from run_correction() via
+  # params$obs_mask) lets us reconstruct and RF-impute a real one here,
+  # via the same rf_impute_corrected() helper correct_none() itself uses.
+  baseline_dist_ratio <- if (!is.null(obs_mask)) {
+    eval_dist_ratio(rf_impute_corrected(data, obs_mask), group1 = eval_group, group2 = "Sample")
+  } else {
+    eval_dist_ratio(data, group1 = eval_group, group2 = "Sample")
+  }
 
   results <- foreach(i = seq_len(nrow(grid))) %dopar% {
     once <- tryCatch(run_waveica_v1_once(data, grid$alpha[i], grid$t[i], grid$k[i], t2, wf),
@@ -1071,7 +1110,8 @@ select_waveica_v1_params <- function(data, alpha_grid, t_grid, k_grid, t2, wf, e
 # (like cordbat) so a real drift step can run first -- e.g.
 # loess:hybrid:waveica_v1 -- while none:none:waveica_v1 keeps working exactly
 # as before (drift step is a no-op when drift_method="none").
-run_waveica_v1 <- function(combined, wf, alpha_grid, t_grid, k_grid, t2, eval_group) {
+run_waveica_v1 <- function(combined, wf, alpha_grid, t_grid, k_grid, t2, eval_group,
+                            obs_mask = NULL) {
   suppressPackageStartupMessages(library(WaveICA))
 
   n_batches <- length(unique(colData(combined)$Batch))
@@ -1083,7 +1123,7 @@ run_waveica_v1 <- function(combined, wf, alpha_grid, t_grid, k_grid, t2, eval_gr
   message("==> WaveICA (v1) correction")
   assay(combined, 1, withDimnames = FALSE) <- select_waveica_v1_params(
     combined, alpha_grid = alpha_grid, t_grid = t_grid, k_grid = k_grid, t2 = t2, wf = wf,
-    eval_group = eval_group
+    eval_group = eval_group, obs_mask = obs_mask
   )
   combined
 }
