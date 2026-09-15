@@ -97,11 +97,12 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
                                   rsd_threshold, ruv_k, serrf_num, loess_qc_span,
                                   loess_sample_span, drift_sample_min_obs,
                                   drift_min_qc_per_batch, drift_min_ltqc_validate,
-                                  auto_loess_spans, auto_huber_ks,
-                                  auto_sample_loess_spans, auto_sample_huber_ks,
+                                  auto_loess_spans, auto_huber_ks, auto_spline_spars,
+                                  auto_sample_loess_spans, auto_sample_huber_ks, auto_sample_spline_spars,
                                   auto_min_qc_per_batch, auto_min_ltqc_validate, auto_min_cv_obs,
                                   huber_qc_k, huber_sample_k, sva_n_sv,
-                                  loess_qc_cv_spans, huber_qc_cv_ks,
+                                  spline_qc_spar, spline_sample_spar,
+                                  loess_qc_cv_spans, huber_qc_cv_ks, spline_qc_cv_spars,
                                   waveica_alpha, waveica_cutoff, waveica_k, waveica_eval_group,
                                   waveica_v1_k, waveica_v1_t, waveica_v1_t2, waveica_v1_alpha,
                                   waveica_v1_eval_group,
@@ -195,6 +196,8 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "RSD_THRESHOLD",           rsd_threshold,           min = 0)
   problems <- check_numeric(problems, "LOESS_QC_SPAN",           loess_qc_span,           min = 0, max = 1)
   problems <- check_numeric(problems, "LOESS_SAMPLE_SPAN",       loess_sample_span,       min = 0, max = 1)
+  problems <- check_numeric(problems, "SPLINE_QC_SPAR",          spline_qc_spar,          min = 0)
+  problems <- check_numeric(problems, "SPLINE_SAMPLE_SPAR",      spline_sample_spar,      min = 0)
 
   # Numeric parameters: required integers
   problems <- check_numeric(problems, "MIN_BATCH_DETECTION",    min_batch_detection,    min = 0)
@@ -206,8 +209,10 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "DRIFT_MIN_LTQC_VALIDATE", drift_min_ltqc_validate, min = 2)
   problems <- check_numeric_list(problems, "AUTO_LOESS_SPANS",        auto_loess_spans,        min = 0, max = 1)
   problems <- check_numeric_list(problems, "AUTO_HUBER_KS",           auto_huber_ks,           min = 0)
+  problems <- check_numeric_list(problems, "AUTO_SPLINE_SPARS",       auto_spline_spars,       min = 0)
   problems <- check_numeric_list(problems, "AUTO_SAMPLE_LOESS_SPANS", auto_sample_loess_spans, min = 0, max = 1)
   problems <- check_numeric_list(problems, "AUTO_SAMPLE_HUBER_KS",    auto_sample_huber_ks,    min = 0)
+  problems <- check_numeric_list(problems, "AUTO_SAMPLE_SPLINE_SPARS", auto_sample_spline_spars, min = 0)
   problems <- check_numeric(problems, "AUTO_MIN_QC_PER_BATCH",  auto_min_qc_per_batch,  min = 1)
   problems <- check_numeric(problems, "AUTO_MIN_LTQC_VALIDATE", auto_min_ltqc_validate, min = 2)
   problems <- check_numeric(problems, "AUTO_MIN_CV_OBS",        auto_min_cv_obs,        min = 4)
@@ -216,6 +221,7 @@ run_preflight_checks <- function(input_mode, in_xlsx, in_feature_table, in_sampl
   problems <- check_numeric(problems, "SVA_N_SV", sva_n_sv, min = 0, allow_na = TRUE)
   problems <- check_numeric_list_optional(problems, "LOESS_QC_CV_SPANS", loess_qc_cv_spans, min = 0, max = 1)
   problems <- check_numeric_list_optional(problems, "HUBER_QC_CV_KS",    huber_qc_cv_ks,    min = 0)
+  problems <- check_numeric_list_optional(problems, "SPLINE_QC_CV_SPARS", spline_qc_cv_spars, min = 0)
   problems <- check_numeric_list(problems, "WAVEICA_ALPHA",  waveica_alpha,  min = 0, max = 1)
   problems <- check_numeric_list(problems, "WAVEICA_CUTOFF", waveica_cutoff, min = 0, max = 1)
   problems <- check_waveica_k_list(problems, "WAVEICA_K", waveica_k, min = 1)

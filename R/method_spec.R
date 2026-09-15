@@ -10,7 +10,7 @@
 # run_correction(), see R/correction_methods.R).
 # ─────────────────────────────────────────────────────────────────────────────
 
-VALID_DRIFT_METHODS <- c("none", "loess", "huber", "auto", "notame_spline")
+VALID_DRIFT_METHODS <- c("none", "loess", "huber", "spline", "auto", "notame_spline")
 VALID_BASES         <- c("none", "qc", "samples", "hybrid")
 VALID_BATCH_METHODS <- c("none", "combat", "sva", "limma", "feature_median", "global_median",
                           "ruv_s", "cordbat", "batchcorr", "waveica", "waveica_v1",

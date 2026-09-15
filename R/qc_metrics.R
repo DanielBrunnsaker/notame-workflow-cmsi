@@ -388,7 +388,7 @@ detect_qc_outliers <- function(data, group, min_n = 3, mad_k = 5, n_pcs = 5) {
 # both corrected and raw data, then correlates the two distance vectors (Spearman).
 # Returns the median correlation across batches.
 #
-# This avoids the cross-batch confound of the feature-wise signal_preservation_r:
+# This avoids the cross-batch confound a feature-wise correlation would have:
 # within a batch the batch offset is constant and does not inflate pairwise
 # distances, so raw within-batch distances already reflect biology.
 eval_within_batch_dist_preservation <- function(se, ref_mat) {
@@ -426,46 +426,6 @@ eval_within_batch_dist_preservation <- function(se, ref_mat) {
   }, numeric(1))
 
   round(median(batch_cors, na.rm = TRUE), 3)
-}
-
-
-# Compute median feature-wise Spearman correlation between corrected and a
-# reference dataset (both restricted to biological samples only).
-# Features present in both are used; returns NA if fewer than 2 features match.
-eval_signal_preservation <- function(se, ref_mat) {
-  if (is.null(ref_mat)) return(NA_real_)
-  sample_idx <- which(colData(se)$QC == "Sample")
-  if (length(sample_idx) < 3) return(NA_real_)
-
-  mat <- assay(se, 1)[, sample_idx, drop = FALSE]
-
-  # Align to features present in both
-  shared <- intersect(rownames(mat), rownames(ref_mat))
-  if (length(shared) < 2) return(NA_real_)
-
-  # Align columns (samples) by Sample_ID
-  cd      <- colData(se)[sample_idx, , drop = FALSE]
-  ref_ids <- colnames(ref_mat)
-  cur_ids <- cd$Sample_ID
-
-  shared_ids <- intersect(cur_ids, ref_ids)
-  if (length(shared_ids) < 3) return(NA_real_)
-
-  cur_cols <- match(shared_ids, cur_ids)
-  ref_cols <- match(shared_ids, ref_ids)
-
-  mat_cur <- mat[shared, cur_cols, drop = FALSE]
-  mat_ref <- ref_mat[shared, ref_cols, drop = FALSE]
-
-  # Feature-wise Spearman correlation
-  cors <- sapply(seq_len(nrow(mat_cur)), function(i) {
-    x <- mat_cur[i, ]
-    y <- mat_ref[i, ]
-    ok <- is.finite(x) & is.finite(y)
-    if (sum(ok) < 3) return(NA_real_)
-    cor(x[ok], y[ok], method = "spearman")
-  })
-  median(cors, na.rm = TRUE)
 }
 
 

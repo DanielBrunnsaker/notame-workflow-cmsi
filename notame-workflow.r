@@ -102,11 +102,23 @@ if both are set for the same parameter.
                           none           no drift correction
                           loess          LOESS drift correction (LOESS_QC_SPAN / LOESS_SAMPLE_SPAN)
                           huber          Huber robust regression (HUBER_QC_K / HUBER_SAMPLE_K)
-                          auto           auto-selected via cross-validation from LOESS spans
+                          spline         cubic smoothing spline, fixed spar (SPLINE_QC_SPAR /
+                                         SPLINE_SAMPLE_SPAR) -- more flexible than Huber's rigid
+                                         line, smoother/more globally continuous than LOESS's local
+                                         fit; no robust/outlier-resistant mode, unlike loess/huber
+                          auto           auto-selected via cross-validation, from LOESS spans
                                          (AUTO_LOESS_SPANS/AUTO_SAMPLE_LOESS_SPANS), Huber k's
-                                         (AUTO_HUBER_KS/AUTO_SAMPLE_HUBER_KS), and a flat/no-op
-                                         baseline -- ONE method is chosen for the whole run (per
-                                         basis), not a different one per batch
+                                         (AUTO_HUBER_KS/AUTO_SAMPLE_HUBER_KS), spline spars
+                                         (AUTO_SPLINE_SPARS/AUTO_SAMPLE_SPLINE_SPARS), and a
+                                         flat/no-op baseline. Two grains: which FAMILY
+                                         (loess/huber/spline) is decided once per tier, pooling
+                                         every eligible batch's evidence via rank (not raw score
+                                         magnitude, which would let one noisy or feature-rich batch
+                                         dominate); which PARAMETER within that family, and whether
+                                         to apply anything at all, is still decided independently
+                                         per batch, from that batch's own evidence only -- a
+                                         different span/k/spar per batch is expected, 'flat' stays
+                                         available to every batch regardless of which family won
                           notame_spline  notame's own per-feature cubic smoothing spline
                                          (notame::correct_drift()); only supports basis=qc
 
@@ -248,19 +260,39 @@ if both are set for the same parameter.
                         span risks fitting individual-sample noise as drift.
                         Default: 0.9
 
+  SPLINE_QC_SPAR        Cubic smoothing spline (stats::smooth.spline) spar for drift_method=spline's
+                        QC-based fit (basis=qc, or basis=hybrid's QC branch). Higher = smoother,
+                        more conservative correction (same direction as LOESS_QC_SPAN, though the
+                        two parameters aren't on a directly comparable scale). Fixed (shared across
+                        every feature), not auto-searched — see SPLINE_QC_CV_SPARS for a per-feature
+                        CV-chosen spar, or AUTO_SPLINE_SPARS/drift_method=auto for a per-batch
+                        CV-chosen spar instead.
+                        Default: 0.6
+
+  SPLINE_SAMPLE_SPAR    Smoothing spline spar for drift_method=spline's samples-based fit
+                        (basis=samples, or basis=hybrid's samples branch), fit on biological
+                        samples instead of QC. Higher than SPLINE_QC_SPAR by default, same
+                        reasoning as LOESS_SAMPLE_SPAN vs LOESS_QC_SPAN — a tighter spar risks
+                        fitting individual-sample noise as drift. Unlike LOESS (family='symmetric')
+                        or Huber (psi.huber), plain smooth.spline has no robust/outlier-resistant
+                        fitting mode, so this higher default spar is this candidate's main defense
+                        against a single biological outlier pulling the fit.
+                        Default: 0.8
+
   DRIFT_SAMPLE_MIN_OBS  Minimum finite sample observations per feature required to attempt a
                         samples-based drift fit (basis=samples, or basis=hybrid's samples branch;
-                        applies to both drift_method=loess and drift_method=huber). Deliberately
+                        applies to drift_method=loess, huber, and spline alike). Deliberately
                         higher than the QC-based fit's threshold of 4, since sample points are far
                         noisier. Features below this are left uncorrected for that batch.
                         Default: 10
 
   DRIFT_MIN_QC_PER_BATCH  Minimum QC samples a batch must have to use the QC-based fit under
-                        basis=hybrid (applies to drift_method=loess and drift_method=huber alike).
+                        basis=hybrid (applies to drift_method=loess, huber, and spline alike).
                         Batches meeting this threshold get the QC-based fit (LOESS_QC_SPAN /
-                        HUBER_QC_K). Batches below it try the samples-based fit
-                        (LOESS_SAMPLE_SPAN/HUBER_SAMPLE_K, DRIFT_SAMPLE_MIN_OBS) as a trial, kept
-                        only if it improves the ltQC/Sample D-ratio — see DRIFT_MIN_LTQC_VALIDATE.
+                        HUBER_QC_K / SPLINE_QC_SPAR). Batches below it try the samples-based fit
+                        (LOESS_SAMPLE_SPAN/HUBER_SAMPLE_K/SPLINE_SAMPLE_SPAR, DRIFT_SAMPLE_MIN_OBS)
+                        as a trial, kept only if it improves the ltQC/Sample D-ratio — see
+                        DRIFT_MIN_LTQC_VALIDATE.
                         QC-based fitting is preferred whenever there's enough QC to support it,
                         since it doesn't risk removing real biological signal along with drift.
                         Also used by basis=qc as a hard cutoff (no samples-based fallback there —
@@ -290,9 +322,9 @@ if both are set for the same parameter.
 
   AUTO_LOESS_SPANS      Comma-separated LOESS spans drift_method=auto evaluates as candidates for
                         the QC-based selection (leave-one-out CV on QC; used when basis=qc, or
-                        basis=hybrid's QC-tier — set together with AUTO_HUBER_KS as one QC-based
-                        candidate pool; see AUTO_SAMPLE_LOESS_SPANS for the separate samples-only
-                        pool).
+                        basis=hybrid's QC-tier — set together with AUTO_HUBER_KS/AUTO_SPLINE_SPARS
+                        as one QC-based candidate pool; see AUTO_SAMPLE_LOESS_SPANS for the separate
+                        samples-only pool).
                         Default: 0.5,0.75,0.9
 
   AUTO_HUBER_KS         Comma-separated Huber regression k values (MASS::rlm, psi.huber)
@@ -301,6 +333,13 @@ if both are set for the same parameter.
                         efficient; 1.345 is MASS::rlm's own default (~95% efficiency under
                         Gaussian errors).
                         Default: 1.0,1.345,2.0
+
+  AUTO_SPLINE_SPARS     Comma-separated smoothing spline spar values (stats::smooth.spline)
+                        drift_method=auto evaluates as candidates for the QC-based selection.
+                        Each is a fixed grid point, like AUTO_LOESS_SPANS/AUTO_HUBER_KS -- not
+                        smooth.spline's own internal CV-selected spar, since the outer per-batch
+                        CV here already plays that role and nesting the two would be redundant.
+                        Default: 0.4,0.6,0.8
 
   AUTO_SAMPLE_LOESS_SPANS  Comma-separated LOESS spans drift_method=auto evaluates for the
                         samples-based selection (basis=samples, or basis=hybrid's samples-tier;
@@ -312,6 +351,13 @@ if both are set for the same parameter.
   AUTO_SAMPLE_HUBER_KS  Comma-separated Huber k values for drift_method=auto's samples-based
                         candidate pool.
                         Default: 1.0,1.345,2.0
+
+  AUTO_SAMPLE_SPLINE_SPARS  Comma-separated smoothing spline spar values for drift_method=auto's
+                        samples-based candidate pool. Higher range than AUTO_SPLINE_SPARS, same
+                        reasoning as AUTO_SAMPLE_LOESS_SPANS vs AUTO_LOESS_SPANS — smooth.spline has
+                        no robust/outlier-resistant mode, so a smoother default range matters more
+                        here than for the QC-based pool.
+                        Default: 0.5,0.7,0.9
 
   AUTO_MIN_QC_PER_BATCH  Same role as DRIFT_MIN_QC_PER_BATCH, for drift_method=auto: minimum QC
                         samples a batch needs to contribute to (and, under basis=hybrid, receive)
@@ -340,6 +386,13 @@ if both are set for the same parameter.
                         Lower = more robust to outlier QC points but less statistically efficient;
                         1.345 is MASS::rlm's own default (~95% efficiency under Gaussian errors).
                         Default: 1.345
+
+  SPLINE_QC_CV_SPARS    Comma-separated smoothing spline spar candidates for drift_method=spline's
+                        QC-based step (basis=qc, or basis=hybrid's QC branch). Same idea as
+                        LOESS_QC_CV_SPANS/HUBER_QC_CV_KS: when set, spar is chosen per FEATURE via
+                        leave-one-out CV on QC instead of the fixed SPLINE_QC_SPAR. Leave empty
+                        (default) to keep using the fixed SPLINE_QC_SPAR for every feature.
+                        Default: (disabled — uses SPLINE_QC_SPAR)
 
   HUBER_SAMPLE_K        Huber tuning constant for drift_method=huber's samples-based fit
                         (basis=samples, or basis=hybrid's samples branch). Separate setting from
@@ -600,6 +653,8 @@ RUV_K      <- as.integer(get_env("RUV_K",       "3"))
 SERRF_NUM  <- as.integer(get_env("SERRF_NUM",   "5"))
 LOESS_QC_SPAN             <- as.numeric(get_env("LOESS_QC_SPAN", "0.75"))
 LOESS_SAMPLE_SPAN         <- as.numeric(get_env("LOESS_SAMPLE_SPAN", "0.9"))
+SPLINE_QC_SPAR            <- as.numeric(get_env("SPLINE_QC_SPAR", "0.6"))
+SPLINE_SAMPLE_SPAR        <- as.numeric(get_env("SPLINE_SAMPLE_SPAR", "0.8"))
 DRIFT_SAMPLE_MIN_OBS      <- as.integer(get_env("DRIFT_SAMPLE_MIN_OBS", "10"))
 DRIFT_MIN_QC_PER_BATCH    <- as.integer(get_env("DRIFT_MIN_QC_PER_BATCH", "4"))
 DRIFT_MIN_LTQC_VALIDATE   <- as.integer(get_env("DRIFT_MIN_LTQC_VALIDATE", "2"))
@@ -634,8 +689,10 @@ WAVEICA_V1_ALPHA      <- parse_num_list(get_env("WAVEICA_V1_ALPHA", "0"))
 WAVEICA_V1_EVAL_GROUP <- get_env("WAVEICA_V1_EVAL_GROUP", "ltQC")
 AUTO_LOESS_SPANS        <- parse_num_list(get_env("AUTO_LOESS_SPANS",        "0.5,0.75,0.9"))
 AUTO_HUBER_KS           <- parse_num_list(get_env("AUTO_HUBER_KS",           "1.0,1.345,2.0"))
+AUTO_SPLINE_SPARS       <- parse_num_list(get_env("AUTO_SPLINE_SPARS",       "0.4,0.6,0.8"))
 AUTO_SAMPLE_LOESS_SPANS <- parse_num_list(get_env("AUTO_SAMPLE_LOESS_SPANS", "0.3,0.6,0.9"))
 AUTO_SAMPLE_HUBER_KS    <- parse_num_list(get_env("AUTO_SAMPLE_HUBER_KS",    "1.0,1.345,2.0"))
+AUTO_SAMPLE_SPLINE_SPARS <- parse_num_list(get_env("AUTO_SAMPLE_SPLINE_SPARS", "0.5,0.7,0.9"))
 AUTO_MIN_QC_PER_BATCH   <- as.integer(get_env("AUTO_MIN_QC_PER_BATCH",  "4"))
 AUTO_MIN_LTQC_VALIDATE  <- as.integer(get_env("AUTO_MIN_LTQC_VALIDATE", "2"))
 AUTO_MIN_CV_OBS         <- as.integer(get_env("AUTO_MIN_CV_OBS",       "4"))
@@ -643,8 +700,9 @@ HUBER_QC_K     <- as.numeric(get_env("HUBER_QC_K",     "1.345"))
 HUBER_SAMPLE_K <- as.numeric(get_env("HUBER_SAMPLE_K", "1.345"))
 sva_n_sv_env <- get_env("SVA_N_SV", "")
 SVA_N_SV     <- if (sva_n_sv_env == "") NULL else as.integer(sva_n_sv_env)
-LOESS_QC_CV_SPANS <- parse_num_list(get_env("LOESS_QC_CV_SPANS", ""))
-HUBER_QC_CV_KS    <- parse_num_list(get_env("HUBER_QC_CV_KS",    ""))
+LOESS_QC_CV_SPANS  <- parse_num_list(get_env("LOESS_QC_CV_SPANS",  ""))
+HUBER_QC_CV_KS     <- parse_num_list(get_env("HUBER_QC_CV_KS",     ""))
+SPLINE_QC_CV_SPARS <- parse_num_list(get_env("SPLINE_QC_CV_SPARS", ""))
 COMBAT_MEAN_ONLY <- get_env("COMBAT_MEAN_ONLY", "auto")
 COMBAT_PAR_PRIOR <- get_env("COMBAT_PAR_PRIOR", "auto")
 NORMALIZATION              <- get_env("NORMALIZATION",              "none")
@@ -669,13 +727,16 @@ run_preflight_checks(
   loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
   drift_min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH,
   drift_min_ltqc_validate = DRIFT_MIN_LTQC_VALIDATE,
-  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS,
+  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS, auto_spline_spars = AUTO_SPLINE_SPARS,
   auto_sample_loess_spans = AUTO_SAMPLE_LOESS_SPANS, auto_sample_huber_ks = AUTO_SAMPLE_HUBER_KS,
+  auto_sample_spline_spars = AUTO_SAMPLE_SPLINE_SPARS,
   auto_min_qc_per_batch = AUTO_MIN_QC_PER_BATCH, auto_min_ltqc_validate = AUTO_MIN_LTQC_VALIDATE,
   auto_min_cv_obs = AUTO_MIN_CV_OBS,
   huber_qc_k = HUBER_QC_K, huber_sample_k = HUBER_SAMPLE_K,
+  spline_qc_spar = SPLINE_QC_SPAR, spline_sample_spar = SPLINE_SAMPLE_SPAR,
   sva_n_sv = if (is.null(SVA_N_SV)) NA_integer_ else SVA_N_SV,
   loess_qc_cv_spans = LOESS_QC_CV_SPANS, huber_qc_cv_ks = HUBER_QC_CV_KS,
+  spline_qc_cv_spars = SPLINE_QC_CV_SPARS,
   waveica_alpha = WAVEICA_ALPHA, waveica_cutoff = WAVEICA_CUTOFF, waveica_k = WAVEICA_K,
   waveica_eval_group = WAVEICA_EVAL_GROUP,
   waveica_v1_k = WAVEICA_V1_K, waveica_v1_t = WAVEICA_V1_T,
@@ -1005,10 +1066,11 @@ if (SAVE_PRE_CORRECTION_PLOTS) {
 old_summaries <- list.files(interdir, pattern = "^qc_summary_.+\\.csv$", full.names = TRUE)
 if (length(old_summaries) > 0) file.remove(old_summaries)
 
-# Build raw reference for signal-preservation metric (biological samples only).
-# Intentionally NOT imputed — NAs are kept so that signal_preservation_r is
-# computed only over originally-observed positions. Positions missing in the
-# raw data are excluded from the correlation naturally via is.finite() checks.
+# Build raw reference for the within-batch signal-preservation metric
+# (biological samples only). Intentionally NOT imputed — NAs are kept so
+# that within_batch_dist_r is computed only over originally-observed
+# positions. Positions missing in the raw data are excluded from the
+# correlation naturally via is.finite() checks.
 message("==> Building raw reference for signal-preservation metric")
 raw_ref <- tryCatch({
   samp_idx <- which(colData(data)$QC == "Sample")
@@ -1017,7 +1079,7 @@ raw_ref <- tryCatch({
   write.csv(as.data.frame(mat), file.path(output_dir, "raw_reference.csv"))
   mat
 }, error = function(e) {
-  message("WARNING: could not build raw reference (signal_preservation_r will be NA): ", conditionMessage(e))
+  message("WARNING: could not build raw reference (within_batch_dist_r will be NA): ", conditionMessage(e))
   NULL
 })
 
@@ -1044,12 +1106,15 @@ if (serrf_num_eff < SERRF_NUM)
 params <- list(
   loess_qc_span = LOESS_QC_SPAN, loess_sample_span = LOESS_SAMPLE_SPAN,
   huber_qc_k = HUBER_QC_K, huber_sample_k = HUBER_SAMPLE_K,
+  spline_qc_spar = SPLINE_QC_SPAR, spline_sample_spar = SPLINE_SAMPLE_SPAR,
   drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
   min_qc_per_batch = DRIFT_MIN_QC_PER_BATCH, min_ltqc_validate = DRIFT_MIN_LTQC_VALIDATE,
   drift_hybrid_validate = DRIFT_HYBRID_VALIDATE,
   loess_qc_cv_spans = LOESS_QC_CV_SPANS, huber_qc_cv_ks = HUBER_QC_CV_KS,
-  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS,
+  spline_qc_cv_spars = SPLINE_QC_CV_SPARS,
+  auto_loess_spans = AUTO_LOESS_SPANS, auto_huber_ks = AUTO_HUBER_KS, auto_spline_spars = AUTO_SPLINE_SPARS,
   auto_sample_loess_spans = AUTO_SAMPLE_LOESS_SPANS, auto_sample_huber_ks = AUTO_SAMPLE_HUBER_KS,
+  auto_sample_spline_spars = AUTO_SAMPLE_SPLINE_SPARS,
   auto_min_qc_per_batch = AUTO_MIN_QC_PER_BATCH, auto_min_ltqc_validate = AUTO_MIN_LTQC_VALIDATE,
   auto_min_cv_obs = AUTO_MIN_CV_OBS,
   combat_mean_only = COMBAT_MEAN_ONLY, combat_par_prior = COMBAT_PAR_PRIOR, sva_n_sv = SVA_N_SV,

@@ -299,8 +299,10 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   } else if (drift_method == "auto") {
     auto_result <- auto_select_drift_correction(data, basis = basis,
         loess_spans = params$auto_loess_spans, huber_ks = params$auto_huber_ks,
+        spline_spars = params$auto_spline_spars,
         sample_loess_spans = params$auto_sample_loess_spans,
         sample_huber_ks = params$auto_sample_huber_ks,
+        sample_spline_spars = params$auto_sample_spline_spars,
         min_qc_per_batch = params$auto_min_qc_per_batch,
         min_ltqc_validate = params$auto_min_ltqc_validate,
         min_cv_obs = params$auto_min_cv_obs)
@@ -358,13 +360,6 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   combined <- rf_impute_corrected(combined, obs_mask)
 
   list(pre = pre, post = combined, obs_mask = obs_mask, drift_log = drift_log)
-}
-
-correct_none <- function(data) {
-  message("==> No correction (imputation only)")
-  obs_mask <- !is.na(assay(data, 1))
-  combined <- impute_rf(data, parallelize = "variables")
-  list(pre = combined, post = combined, obs_mask = obs_mask)
 }
 
 # Per-feature batch median ratio correction.

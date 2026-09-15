@@ -10,10 +10,14 @@
 # huber_correct_batch()          — QC-based Huber robust regression drift correction (fixed k)
 # huber_correct_batch_samples()  — QC-free Huber drift correction, fit on biological samples
 # huber_correct_batch_hybrid()   — per-batch Huber equivalent of loess_correct_batch_hybrid()
-# qc_cv_correct_batch()          — QC-based drift correction with span/k selected per FEATURE via
-#                                   leave-one-out CV, instead of one shared value (opt-in, via
-#                                   loess_correct_batch_hybrid()/huber_correct_batch_hybrid()'s
-#                                   qc_span_grid/qc_k_grid) -- mirrors notame::correct_drift()
+# spline_correct_batch()         — QC-based cubic smoothing spline drift correction (fixed spar)
+# spline_correct_batch_samples() — QC-free smoothing spline drift correction, fit on samples
+# spline_correct_batch_hybrid()  — per-batch smoothing spline equivalent of loess_correct_batch_hybrid()
+# qc_cv_correct_batch()          — QC-based drift correction with span/k/spar selected per FEATURE
+#                                   via leave-one-out CV, instead of one shared value (opt-in, via
+#                                   loess_correct_batch_hybrid()/huber_correct_batch_hybrid()/
+#                                   spline_correct_batch_hybrid()'s qc_span_grid/qc_k_grid/
+#                                   qc_spar_grid) -- mirrors notame::correct_drift()
 # gate_by_qc_count()              — applies a per-batch drift function only if the batch meets a
 #                                    minimum QC count; used to give basis="qc" the same batch-level
 #                                    gate basis="hybrid" already has (see R/method_spec.R)
@@ -21,24 +25,38 @@
 #                                    used by run_correction() (R/correction_methods.R) for every
 #                                    drift x basis combination except "auto" (handled separately,
 #                                    since it operates over all batches at once)
+# candidate_family()               — maps a candidate's name to its family ("loess"/"huber"/
+#                                     "spline"/"flat"), used to group per-parameter candidates for
+#                                     rank_select_family()
+# rank_select_family()              — pre-stage: pools evidence across all eligible batches, via
+#                                      rank-sum rather than raw score magnitude, to pick ONE family
+#                                      to restrict the per-batch search to -- guards against a
+#                                      high-noise or feature-rich batch dominating a
+#                                      magnitude-based pool
 # select_qc_candidate_per_batch()    — for each batch independently, evaluates per-feature
 #                                      LOO-CV-on-QC scores and picks that batch's own winning
-#                                      candidate; extracted from auto_select_drift_correction() so
-#                                      it can be reused for any basis
-# select_sample_candidate_per_batch() — same idea, per batch, using held-out ltQC/Sample D-ratio
-#                                      for a samples-based pick
+#                                      candidate (restricted to rank_select_family()'s pick);
+#                                      extracted from auto_select_drift_correction() so it can be
+#                                      reused for any basis
+# select_sample_candidate_per_batch() — same idea, per batch, using held-out ltQC prediction score
+#                                      (D-ratio computed alongside but informational only) for a
+#                                      samples-based pick
 # auto_select_drift_correction() — basis-parameterized (qc/samples/hybrid): for each eligible
 #                                   QC-based batch, and each eligible QC-free batch, independently
 #                                   selects its OWN best drift-correction method (a different
 #                                   method per batch is expected, not pooled into one shared
 #                                   winner), from several fitting candidates (LOESS at several
-#                                   spans, Huber regression at several k, a flat/no-op baseline),
+#                                   spans, Huber regression at several k, a smoothing spline at
+#                                   several spar values, a flat/no-op baseline),
 #                                   using that batch's own evidence: leave-one-out CV on its own QC
-#                                   for QC-based batches, held-out ltQC/Sample D-ratio on its own
-#                                   samples for QC-free batches. Returns list(batches=, log=): batches
-#                                   is the list of corrected per-batch SEs, log is a data.frame (one
-#                                   row per batch x candidate) of the full selection record, for the
-#                                   caller to save alongside the corrected output.
+#                                   for QC-based batches, held-out ltQC prediction score on its own
+#                                   samples for QC-free batches. Every batch's search is restricted
+#                                   to one dataset-wide family (rank_select_family()), leaving
+#                                   per-batch parameter tuning within that family unchanged.
+#                                   Returns list(batches=, log=): batches is the list of corrected
+#                                   per-batch SEs, log is a
+#                                   data.frame (one row per batch x candidate) of the full selection
+#                                   record, for the caller to save alongside the corrected output.
 
 split_by_batch <- function(se) {
   batches <- unique(colData(se)$Batch)
@@ -459,6 +477,180 @@ huber_correct_batch_hybrid <- function(se_b, qc_k, sample_k, sample_min_obs,
 }
 
 
+# Smoothing spline within-batch drift correction (QC-based). Structurally
+# identical to huber_correct_batch() -- same per-feature QC fit, same
+# ratio-to-QC-median correction, calls the shared fit_predict_spline() helper
+# directly since (like Huber) there's no separate robust-family variant to
+# choose between for QC vs samples. More flexible than Huber's rigid line,
+# smoother/more globally continuous than LOESS's local fit -- see
+# fit_predict_spline()'s documentation for the full tradeoff.
+spline_correct_batch <- function(se_b, spar = 0.6) {
+  mat    <- assay(se_b, 1)
+  cd     <- colData(se_b)
+  qc_idx <- which(cd$QC == "QC")
+  inj    <- as.numeric(cd$Injection_order)
+  batch  <- unique(cd$Batch)
+  n_feat <- nrow(mat)
+
+  message("  Batch ", batch, ": ", length(qc_idx), " QC sample(s), ", n_feat, " features")
+
+  if (any(!is.finite(inj))) {
+    bad <- which(!is.finite(inj))
+    stop("Non-finite Injection_order in batch ", batch,
+         ": samples ", paste(cd$Sample_ID[bad], collapse = ", "),
+         " (values: ", paste(inj[bad], collapse = ", "), ")")
+  }
+
+  n_skipped_qc  <- 0L
+  n_skipped_err <- 0L
+
+  for (i in seq_len(nrow(mat))) {
+    y_qc <- as.numeric(mat[i, qc_idx])
+    x_qc <- inj[qc_idx]
+    ok   <- is.finite(y_qc) & y_qc > 0
+
+    if (sum(ok) < 4) { n_skipped_qc <- n_skipped_qc + 1L; next }
+
+    tryCatch({
+      ok_inj       <- !is.na(inj)
+      pred         <- rep(NA_real_, length(inj))
+      pred[ok_inj] <- fit_predict_spline(x_qc[ok], y_qc[ok], inj[ok_inj], spar = spar)
+      med_qc       <- median(y_qc[ok])
+      ratio        <- pred / med_qc
+      ratio[is.na(ratio) | ratio <= 0] <- 1
+      mat[i, ]     <- mat[i, ] / ratio
+    }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
+  }
+
+  n_qc_corrected <- n_feat - n_skipped_qc - n_skipped_err
+  message("  Batch ", batch, ": drift-corrected ", n_qc_corrected, "/", n_feat, " features",
+          if (n_skipped_qc  > 0) paste0(" | ", n_skipped_qc,  " skipped (insufficient QC observations)") else "",
+          if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (spline fit error)") else "")
+
+  assay(se_b, 1, withDimnames = FALSE) <- mat
+  se_b
+}
+
+
+# Smoothing spline within-batch drift correction (QC-free, fit on biological
+# samples). Structurally identical to huber_correct_batch_samples() -- same
+# reasoning about samples being noisier than QC and the higher default
+# min_obs. No robust-family equivalent exists for smooth.spline (see
+# fit_predict_spline()'s documentation), so a higher default spar (more
+# smoothing, less local reactivity) is this candidate's main defense against
+# a single biological outlier pulling the fit, on top of min_obs.
+spline_correct_batch_samples <- function(se_b, spar = 0.8, min_obs = 10) {
+  mat      <- assay(se_b, 1)
+  cd       <- colData(se_b)
+  samp_idx <- which(cd$QC == "Sample")
+  inj      <- as.numeric(cd$Injection_order)
+  batch    <- unique(cd$Batch)
+  n_feat   <- nrow(mat)
+
+  message("  Batch ", batch, ": ", length(samp_idx), " sample(s), ", n_feat, " features")
+
+  if (any(!is.finite(inj))) {
+    bad <- which(!is.finite(inj))
+    stop("Non-finite Injection_order in batch ", batch,
+         ": samples ", paste(cd$Sample_ID[bad], collapse = ", "),
+         " (values: ", paste(inj[bad], collapse = ", "), ")")
+  }
+
+  n_skipped_n   <- 0L
+  n_skipped_err <- 0L
+
+  for (i in seq_len(nrow(mat))) {
+    y_s <- as.numeric(mat[i, samp_idx])
+    x_s <- inj[samp_idx]
+    ok  <- is.finite(y_s) & y_s > 0
+
+    if (sum(ok) < min_obs) { n_skipped_n <- n_skipped_n + 1L; next }
+
+    tryCatch({
+      ok_inj       <- !is.na(inj)
+      pred         <- rep(NA_real_, length(inj))
+      pred[ok_inj] <- fit_predict_spline(x_s[ok], y_s[ok], inj[ok_inj], spar = spar)
+      med_s        <- median(y_s[ok])
+      ratio        <- pred / med_s
+      ratio[is.na(ratio) | ratio <= 0] <- 1
+      mat[i, ]     <- mat[i, ] / ratio
+    }, error = function(e) { n_skipped_err <<- n_skipped_err + 1L })
+  }
+
+  n_corrected <- n_feat - n_skipped_n - n_skipped_err
+  message("  Batch ", batch, ": drift-corrected ", n_corrected, "/", n_feat, " features",
+          if (n_skipped_n   > 0) paste0(" | ", n_skipped_n,   " skipped (insufficient sample observations)") else "",
+          if (n_skipped_err > 0) paste0(" | ", n_skipped_err, " skipped (spline fit error)") else "")
+
+  assay(se_b, 1, withDimnames = FALSE) <- mat
+  se_b
+}
+
+
+# Per-batch hybrid smoothing spline drift correction -- identical decision
+# logic to loess_correct_batch_hybrid()/huber_correct_batch_hybrid() (QC-based
+# if enough QC; else a samples-based trial validated against ltQC D-ratio;
+# else uncorrected), substituting the spline pair above. See
+# loess_correct_batch_hybrid()'s documentation for the full rationale, which
+# applies unchanged here.
+spline_correct_batch_hybrid <- function(se_b, qc_spar, sample_spar, sample_min_obs,
+                                         min_qc_per_batch = 4, min_ltqc_validate = 3,
+                                         validate = TRUE, qc_spar_grid = numeric(0)) {
+  cd    <- colData(se_b)
+  n_qc  <- sum(cd$QC == "QC")
+  batch <- unique(cd$Batch)
+
+  if (n_qc >= min_qc_per_batch) {
+    if (length(qc_spar_grid) > 0) {
+      message("  Batch ", batch, ": ", n_qc, " QC sample(s) (>= ", min_qc_per_batch,
+              ") — using QC-based spline, spar selected per feature via CV")
+      return(qc_cv_correct_batch(se_b, spline_spars = qc_spar_grid, min_obs = min_qc_per_batch))
+    }
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (>= ", min_qc_per_batch,
+            ") — using QC-based spline")
+    return(spline_correct_batch(se_b, spar = qc_spar))
+  }
+
+  if (!validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") — applying QC-free spline on samples unconditionally (validation disabled)")
+    return(spline_correct_batch_samples(se_b, spar = sample_spar, min_obs = sample_min_obs))
+  }
+
+  n_ltqc <- sum(cd$QC == "ltQC")
+  if (n_ltqc < min_ltqc_validate) {
+    message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+            ") and only ", n_ltqc, " ltQC sample(s) (< ", min_ltqc_validate,
+            ") to validate a QC-free fit — leaving batch uncorrected")
+    return(se_b)
+  }
+
+  message("  Batch ", batch, ": ", n_qc, " QC sample(s) (< ", min_qc_per_batch,
+          ") — trialing QC-free spline on samples, to be validated against ",
+          n_ltqc, " ltQC sample(s)")
+  se_trial <- spline_correct_batch_samples(se_b, spar = sample_spar, min_obs = sample_min_obs)
+
+  dratio_before <- eval_ltqc_dratio(se_b)
+  dratio_after  <- eval_ltqc_dratio(se_trial)
+
+  if (is.na(dratio_before) || is.na(dratio_after)) {
+    message("  Batch ", batch, ": could not compute ltQC/Sample D-ratio before/after (NA) — ",
+            "leaving batch uncorrected")
+    return(se_b)
+  }
+
+  if (dratio_after < dratio_before) {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio improved with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — keeping correction")
+    se_trial
+  } else {
+    message("  Batch ", batch, ": ltQC/Sample D-ratio did not improve with QC-free correction (",
+            round(dratio_before, 4), " -> ", round(dratio_after, 4), ") — reverting to uncorrected")
+    se_b
+  }
+}
+
+
 # Applies correct_fn(se_b) only if the batch has >= min_qc_per_batch QC
 # samples; otherwise leaves se_b unchanged and messages why. Gives
 # basis="qc" the same batch-level gate basis="hybrid" already has via
@@ -520,6 +712,21 @@ resolve_drift_fn <- function(drift_method, basis) {
                                   min_ltqc_validate = p$min_ltqc_validate,
                                   validate = p$drift_hybrid_validate,
                                   qc_k_grid = p$huber_qc_cv_ks),
+    "spline:qc" = function(se_b, p) gate_by_qc_count(se_b, p$min_qc_per_batch, function(x) {
+      if (length(p$spline_qc_cv_spars) > 0)
+        qc_cv_correct_batch(x, spline_spars = p$spline_qc_cv_spars, min_obs = p$min_qc_per_batch)
+      else
+        spline_correct_batch(x, spar = p$spline_qc_spar)
+    }),
+    "spline:samples" = function(se_b, p)
+      spline_correct_batch_samples(se_b, spar = p$spline_sample_spar, min_obs = p$drift_sample_min_obs),
+    "spline:hybrid" = function(se_b, p)
+      spline_correct_batch_hybrid(se_b, qc_spar = p$spline_qc_spar, sample_spar = p$spline_sample_spar,
+                                   sample_min_obs = p$drift_sample_min_obs,
+                                   min_qc_per_batch = p$min_qc_per_batch,
+                                   min_ltqc_validate = p$min_ltqc_validate,
+                                   validate = p$drift_hybrid_validate,
+                                   qc_spar_grid = p$spline_qc_cv_spars),
     "notame_spline:qc" = function(se_b, p) process_batch(se_b),
     stop("No drift-correction dispatch for drift_method='", drift_method, "', basis='", basis, "'")
   )
@@ -595,11 +802,31 @@ fit_predict_flat <- function(x_train, y_train, x_new) {
   rep(median(y_train), length(x_new))
 }
 
-# Builds the candidate list: LOESS at each span, Huber at each k, plus an
-# optional flat baseline. Uses local() (not a plain for loop) so each
-# candidate's closure captures its own span/k value rather than the loop
-# variable's final value.
-build_drift_candidates <- function(loess_spans, huber_ks, include_flat = TRUE) {
+# Cubic smoothing spline (stats::smooth.spline), fit in log2 space for the
+# same reason fit_predict_loess()/fit_predict_huber() do. `spar` is a fixed
+# value here, not the cv=TRUE auto-selection pmp's QCRSC/smooth.spline itself
+# offer -- deliberately: this pipeline's own CV/held-out scoring is already
+# the outer layer that picks among candidates, so an inner CV inside the
+# candidate's own fit would be a redundant, harder-to-reason-about nested CV
+# rather than an improvement (same convention as loess span / huber k, which
+# are also fixed grid points, not self-tuning).
+# Unlike LOESS (family="symmetric" available) or Huber (psi.huber), plain
+# smooth.spline has no robust/outlier-resistant fitting mode -- a single wild
+# training point can pull it more than the other two candidate types. This
+# matters most for the samples-based fit (biological samples are noisier and
+# less controlled than QC), which is part of why the samples-tier default
+# spar is set higher (smoother, less locally reactive) than the QC-tier one.
+fit_predict_spline <- function(x_train, y_train, x_new, spar) {
+  fit <- suppressWarnings(smooth.spline(x_train, log2(y_train), spar = spar))
+  pred_log <- as.numeric(suppressWarnings(predict(fit, x_new)$y))
+  2^pred_log
+}
+
+# Builds the candidate list: LOESS at each span, Huber at each k, smoothing
+# spline at each spar, plus an optional flat baseline. Uses local() (not a
+# plain for loop) so each candidate's closure captures its own
+# span/k/spar value rather than the loop variable's final value.
+build_drift_candidates <- function(loess_spans, huber_ks, spline_spars = numeric(0), include_flat = TRUE) {
   candidates <- list()
   for (s in loess_spans) {
     candidates[[length(candidates) + 1]] <- local({
@@ -617,9 +844,29 @@ build_drift_candidates <- function(loess_spans, huber_ks, include_flat = TRUE) {
              fit_predict_huber(x_train, y_train, x_new, k = k_val))
     })
   }
+  for (sp in spline_spars) {
+    candidates[[length(candidates) + 1]] <- local({
+      spar_val <- sp
+      list(name = sprintf("spline(spar=%.2g)", spar_val),
+           predict_fn = function(x_train, y_train, x_new)
+             fit_predict_spline(x_train, y_train, x_new, spar = spar_val))
+    })
+  }
   if (include_flat)
     candidates[[length(candidates) + 1]] <- list(name = "flat", predict_fn = fit_predict_flat)
   candidates
+}
+
+# Extracts each candidate's family ("loess", "huber", "spline", or "flat")
+# from its name, as produced by build_drift_candidates() -- used to group
+# per-parameter candidates by family for rank_select_family() below.
+candidate_family <- function(candidates) {
+  vapply(candidates, function(cand) {
+    if (grepl("^loess", cand$name)) "loess"
+    else if (grepl("^huber", cand$name)) "huber"
+    else if (grepl("^spline", cand$name)) "spline"
+    else "flat"
+  }, character(1))
 }
 
 # Leave-one-out CV score for one feature, one candidate: mean relative
@@ -784,7 +1031,8 @@ apply_drift_candidate_to_batch <- function(mat, train_idx, inj, predict_fn, min_
 # machinery auto_select_drift_correction() uses) but picks a winner per row
 # (per feature) instead of pooling scores across rows into one dataset-wide
 # choice.
-qc_cv_correct_batch <- function(se_b, loess_spans = numeric(0), huber_ks = numeric(0), min_obs = 4) {
+qc_cv_correct_batch <- function(se_b, loess_spans = numeric(0), huber_ks = numeric(0),
+                                 spline_spars = numeric(0), min_obs = 4) {
   mat    <- assay(se_b, 1)
   cd     <- colData(se_b)
   qc_idx <- which(cd$QC == "QC")
@@ -799,7 +1047,7 @@ qc_cv_correct_batch <- function(se_b, loess_spans = numeric(0), huber_ks = numer
          " (values: ", paste(inj[bad], collapse = ", "), ")")
   }
 
-  candidates <- build_drift_candidates(loess_spans, huber_ks, include_flat = FALSE)
+  candidates <- build_drift_candidates(loess_spans, huber_ks, spline_spars, include_flat = FALSE)
   cand_names <- vapply(candidates, `[[`, character(1), "name")
 
   message("  Batch ", batch, ": ", length(qc_idx), " QC sample(s), ", n_feat,
@@ -854,6 +1102,56 @@ classify_drift_tier <- function(se_b, min_qc_per_batch, min_ltqc_validate) {
   "none"
 }
 
+# Picks ONE family (loess/huber/spline) to restrict the per-batch candidate
+# search to, pooling evidence across every eligible batch via RANK, not raw
+# score magnitude -- specifically to avoid two dominance failure modes a
+# magnitude-based pool would have: a high-noise batch's inflated absolute
+# scores swamping a clean batch's more reliable but smaller-magnitude signal,
+# and a batch with more evaluable features implicitly getting more "votes"
+# than a smaller/noisier one just by contributing more raw values. Per batch,
+# each family is reduced to its own best-achievable score there (min across
+# that family's own parameter grid, using the same per-batch
+# median-across-features aggregate the unrestricted per-batch selection
+# already uses); those per-batch family-bests are then ranked 1st/2nd/3rd
+# within that batch, and ranks (not the underlying scores) are averaged
+# across batches -- so every batch contributes exactly one vote, regardless
+# of its own noise level or feature count, same principle as a Friedman-style
+# rank-sum comparison across blocks. "flat" is excluded -- it isn't a family
+# to lock the search to, it's a baseline that stays available regardless of
+# which family wins (see select_qc_candidate_per_batch()/
+# select_sample_candidate_per_batch()'s use of this function's result).
+#
+# agg_by_batch: list of per-candidate aggregate-score vectors, one per
+# eligible batch, all using the same candidates/order. families:
+# candidate_family(candidates) for that same candidate list. Returns the
+# winning family name, or NA if no batch had usable evidence for more than
+# one family (nothing to lock to -- caller should fall back to unrestricted).
+rank_select_family <- function(agg_by_batch, families) {
+  fam_levels <- setdiff(unique(families), "flat")
+  if (length(fam_levels) <= 1) return(if (length(fam_levels) == 1) fam_levels else NA_character_)
+
+  rank_sums <- setNames(numeric(length(fam_levels)), fam_levels)
+  n_votes   <- setNames(integer(length(fam_levels)), fam_levels)
+
+  for (agg in agg_by_batch) {
+    fam_best <- vapply(fam_levels, function(f) {
+      v <- agg[families == f]
+      if (all(is.na(v))) NA_real_ else min(v, na.rm = TRUE)
+    }, numeric(1))
+    if (all(is.na(fam_best))) next
+    fam_rank <- rank(fam_best, ties.method = "average", na.last = "keep")
+    for (f in fam_levels) {
+      if (!is.na(fam_rank[f])) {
+        rank_sums[f] <- rank_sums[f] + fam_rank[f]
+        n_votes[f]   <- n_votes[f] + 1L
+      }
+    }
+  }
+  if (all(n_votes == 0)) return(NA_character_)
+  avg_rank <- ifelse(n_votes > 0, rank_sums / n_votes, Inf)
+  names(avg_rank)[which.min(avg_rank)]
+}
+
 # For EACH batch in `eligible_idx` (indices into `batches`) independently:
 # evaluates every candidate via per-feature LOO-CV on that batch's own QC
 # data, aggregates by median, and picks that batch's own best-scoring
@@ -881,10 +1179,10 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
   message("==> QC-based batches (", length(eligible_idx), "): evaluating ",
           length(candidates), " drift-correction candidate(s) via LOO-CV on QC, per batch")
 
-  winners  <- vector("list", length(eligible_idx))
-  names(winners) <- batch_names[eligible_idx]
-  log_rows <- list()
+  families <- candidate_family(candidates)
 
+  # --- Pass 1: compute each batch's scores once (no winner decided yet) ---
+  batch_data <- vector("list", length(eligible_idx))
   for (row in seq_along(eligible_idx)) {
     bi     <- eligible_idx[row]
     se_b   <- batches[[bi]]
@@ -905,7 +1203,32 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
       eval_ltqc_dratio(se_trial)
     }, numeric(1))
 
-    winner_ci <- if (all(is.na(agg))) NA_integer_ else which.min(agg)
+    batch_data[[row]] <- list(bi = bi, agg = agg, dratios = qc_dratios)
+  }
+
+  # --- Family lock: rank-pooled across all eligible batches ---
+  locked_family <- rank_select_family(lapply(batch_data, `[[`, "agg"), families)
+  if (is.na(locked_family)) {
+    message("==> QC-tier: no family could be ranked ",
+            "(only one family in the grid, or no usable evidence) -- leaving search unrestricted")
+  } else {
+    message("==> QC-tier family lock: '", locked_family, "' (rank-sum across ",
+            length(eligible_idx), " batch(es)) -- restricting per-batch search to this family + flat")
+  }
+
+  # --- Pass 2: pick each batch's own winner, restricted to the locked family if any ---
+  winners  <- vector("list", length(eligible_idx))
+  names(winners) <- batch_names[eligible_idx]
+  log_rows <- list()
+
+  for (row in seq_along(eligible_idx)) {
+    bi      <- batch_data[[row]]$bi
+    agg     <- batch_data[[row]]$agg
+    qc_dratios <- batch_data[[row]]$dratios
+
+    allowed_ci <- if (!is.na(locked_family)) which(families %in% c(locked_family, "flat")) else seq_along(candidates)
+    agg_allowed <- agg; agg_allowed[-allowed_ci] <- NA_real_
+    winner_ci <- if (all(is.na(agg_allowed))) NA_integer_ else allowed_ci[which.min(agg[allowed_ci])]
 
     for (ci in seq_along(candidates)) {
       message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name, ": LOO-CV score = ",
@@ -913,7 +1236,7 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
               ", ltQC/Sample D-ratio = ",
               if (is.na(qc_dratios[ci])) "NA (no ltQC available)" else round(qc_dratios[ci], 4))
       log_rows[[length(log_rows) + 1]] <- data.frame(
-        batch = batch_names[bi], tier = "qc", candidate = candidates[[ci]]$name,
+        batch = batch_names[bi], tier = "qc", candidate = candidates[[ci]]$name, family = families[ci],
         score_method = "loocv_qc", prediction_score = agg[ci], ltqc_dratio = qc_dratios[ci],
         selected = !is.na(winner_ci) && ci == winner_ci,
         stringsAsFactors = FALSE
@@ -922,7 +1245,7 @@ select_qc_candidate_per_batch <- function(batches, batch_names, eligible_idx, ca
 
     if (is.na(winner_ci)) {
       message("  Batch ", batch_names[bi], ": no candidate could be evaluated",
-              " (too few QC observations per feature)")
+              " (too few QC observations per feature, or none in the locked family)")
       next
     }
     winner <- candidates[[winner_ci]]
@@ -966,10 +1289,10 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
           length(candidates), " candidate(s) (fit on samples) via held-out ltQC prediction",
           " score, per batch")
 
-  winners  <- vector("list", length(eligible_idx))
-  names(winners) <- batch_names[eligible_idx]
-  log_rows <- list()
+  families <- candidate_family(candidates)
 
+  # --- Pass 1: compute each batch's scores once (no winner decided yet) ---
+  batch_data <- vector("list", length(eligible_idx))
   for (row in seq_along(eligible_idx)) {
     bi         <- eligible_idx[row]
     se_b       <- batches[[bi]]
@@ -990,7 +1313,32 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
       eval_ltqc_dratio(se_trial)
     }, numeric(1))
 
-    winner_ci <- if (all(is.na(agg))) NA_integer_ else which.min(agg)
+    batch_data[[row]] <- list(bi = bi, agg = agg, dratios = dratios)
+  }
+
+  # --- Family lock: rank-pooled across all eligible batches ---
+  locked_family <- rank_select_family(lapply(batch_data, `[[`, "agg"), families)
+  if (is.na(locked_family)) {
+    message("==> Samples-tier: no family could be ranked ",
+            "(only one family in the grid, or no usable evidence) -- leaving search unrestricted")
+  } else {
+    message("==> Samples-tier family lock: '", locked_family, "' (rank-sum across ",
+            length(eligible_idx), " batch(es)) -- restricting per-batch search to this family + flat")
+  }
+
+  # --- Pass 2: pick each batch's own winner, restricted to the locked family if any ---
+  winners  <- vector("list", length(eligible_idx))
+  names(winners) <- batch_names[eligible_idx]
+  log_rows <- list()
+
+  for (row in seq_along(eligible_idx)) {
+    bi      <- batch_data[[row]]$bi
+    agg     <- batch_data[[row]]$agg
+    dratios <- batch_data[[row]]$dratios
+
+    allowed_ci <- if (!is.na(locked_family)) which(families %in% c(locked_family, "flat")) else seq_along(candidates)
+    agg_allowed <- agg; agg_allowed[-allowed_ci] <- NA_real_
+    winner_ci <- if (all(is.na(agg_allowed))) NA_integer_ else allowed_ci[which.min(agg[allowed_ci])]
 
     for (ci in seq_along(candidates)) {
       message("    Batch ", batch_names[bi], ": ", candidates[[ci]]$name, ": held-out ltQC score = ",
@@ -998,7 +1346,7 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
               ", ltQC/Sample D-ratio = ",
               if (is.na(dratios[ci])) "NA" else round(dratios[ci], 4))
       log_rows[[length(log_rows) + 1]] <- data.frame(
-        batch = batch_names[bi], tier = "sample", candidate = candidates[[ci]]$name,
+        batch = batch_names[bi], tier = "sample", candidate = candidates[[ci]]$name, family = families[ci],
         score_method = "holdout_ltqc", prediction_score = agg[ci], ltqc_dratio = dratios[ci],
         selected = !is.na(winner_ci) && ci == winner_ci,
         stringsAsFactors = FALSE
@@ -1006,7 +1354,8 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
     }
 
     if (is.na(winner_ci)) {
-      message("  Batch ", batch_names[bi], ": no candidate's held-out ltQC score could be computed")
+      message("  Batch ", batch_names[bi], ": no candidate's held-out ltQC score could be computed",
+              " (or none in the locked family)")
       next
     }
     winner <- candidates[[winner_ci]]
@@ -1017,19 +1366,37 @@ select_sample_candidate_per_batch <- function(batches, batch_names, eligible_idx
   list(winners = winners, log = do.call(rbind, log_rows))
 }
 
-# A drift-correction method is selected independently for EACH batch, not
-# pooled across batches -- each batch's own correction draws only on its own
-# evidence (LOO-CV on its own QC, or held-out ltQC/Sample D-ratio on its own
-# samples), never borrowed from other batches. This was a deliberate change
-# from an earlier pooled design (one shared winner per tier, chosen from
-# evidence combined across all eligible batches): pooling trades away
-# per-batch accuracy for statistical power on the selection itself, which
-# reads as more defensible on paper but is methodologically inconsistent
-# with actually applying the correction per batch. Per-batch selection costs
-# some of that pooled power -- CV on a single batch's QC is a noisier basis
-# for picking among candidates than CV pooled across several batches -- but
-# is more consistent: no batch's chosen method depends on what other
-# batches' data happened to look like.
+# Two decisions are made at two different grains, deliberately -- not one
+# pooled decision and not one fully per-batch decision:
+#
+#   1. WHICH FAMILY (loess/huber/spline) -- pooled across all eligible
+#      batches in a tier, via rank_select_family()'s rank-sum (not raw score
+#      magnitude, which would let a high-noise or feature-rich batch dominate
+#      the pool). This is a coarse, dataset-level question -- "which curve
+#      shape generally suits this study's drift" -- where pooling gives real
+#      statistical power the alternative (deciding it from one batch's own
+#      often-modest QC/ltQC count) wouldn't have. It also keeps every
+#      batch's residual noise the same qualitative shape going into the
+#      batch-correction step, not just matched magnitude (which ComBat's own
+#      variance-equalisation step already handles regardless).
+#   2. WHICH PARAMETER within that family, and WHETHER to apply anything at
+#      all -- still decided independently per batch, from that batch's own
+#      evidence only (LOO-CV on its own QC, or held-out ltQC prediction score
+#      on its own samples), never borrowed from other batches. This is the
+#      fine-grained, batch-level question -- "how much should THIS batch be
+#      smoothed" -- where per-batch data genuinely differs (QC count, noise
+#      level, how much drift is actually present), so forcing one shared
+#      answer here would be the wrong kind of pooling. "flat" (no-op) stays
+#      available to every batch regardless of which family won, so a batch
+#      that doesn't need correction can still say so.
+#
+# This was a deliberate change from an earlier, fully pooled design (one
+# shared winner per tier -- family AND parameter -- chosen from evidence
+# combined across all eligible batches, then applied to every batch in that
+# tier regardless of fit) and, before that, a fully per-batch design (no
+# pooling at all, including of family) -- both were tried and superseded;
+# see git history for that discussion. The two-grain split above is a
+# considered middle point, not a default left in place from either.
 #
 # `basis` controls which batches are eligible to select (and receive) their
 # own candidate:
@@ -1056,8 +1423,10 @@ auto_select_drift_correction <- function(data,
                                           basis               = c("hybrid", "qc", "samples"),
                                           loess_spans        = c(0.5, 0.75, 0.9),
                                           huber_ks            = c(1.0, 1.345, 2.0),
+                                          spline_spars        = c(0.4, 0.6, 0.8),
                                           sample_loess_spans  = c(0.3, 0.6, 0.9),
                                           sample_huber_ks     = c(1.0, 1.345, 2.0),
+                                          sample_spline_spars = c(0.5, 0.7, 0.9),
                                           min_qc_per_batch    = 4,
                                           min_ltqc_validate   = 3,
                                           min_cv_obs          = 4) {
@@ -1096,11 +1465,12 @@ auto_select_drift_correction <- function(data,
               else paste0("< ", min_ltqc_validate, ", left uncorrected"), ")")
   }
 
-  qc_candidates <- build_drift_candidates(loess_spans, huber_ks, include_flat = TRUE)
+  qc_candidates <- build_drift_candidates(loess_spans, huber_ks, spline_spars, include_flat = TRUE)
   qc_result  <- select_qc_candidate_per_batch(batches, batch_names, qc_eligible_idx, qc_candidates, min_cv_obs)
   qc_winners <- qc_result$winners
 
-  sample_candidates <- build_drift_candidates(sample_loess_spans, sample_huber_ks, include_flat = TRUE)
+  sample_candidates <- build_drift_candidates(sample_loess_spans, sample_huber_ks, sample_spline_spars,
+                                               include_flat = TRUE)
   sample_result  <- select_sample_candidate_per_batch(batches, batch_names, sample_eligible_idx,
                                                         sample_candidates, min_cv_obs)
   sample_winners <- sample_result$winners
