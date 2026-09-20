@@ -460,21 +460,38 @@ eval_remaining_batch_r2 <- function(se) {
 }
 
 
-# Median absolute Spearman correlation of QC sample abundances with injection
-# order, computed per feature per batch, then summarised as median across all
-# feature × batch combinations.
+# Median absolute Spearman correlation of `group` sample abundances with
+# injection order, computed per feature per batch, then summarised as median
+# across all feature × batch combinations.
 # Computed entirely on corrected data — no raw reference needed.
 # Lower = less remaining within-batch drift after correction.
-eval_remaining_drift <- function(se) {
-  qc_idx <- which(colData(se)$QC == "QC")
-  if (length(qc_idx) < 4) return(NA_real_)
+#
+# group = "QC" checks whether the samples several methods (loess/huber's
+# QC-based fit, notame's RUV, pmp_qcrsc, cordbat) drift-corrected AGAINST are
+# themselves still drifting -- a pass there is partly circular for QC-fit
+# methods, same reasoning as eval_qc_homogeneity()'s group parameter.
+# group = "ltQC" is the unbiased, held-out equivalent, but inherits QC-tier's
+# small-n-per-batch caveat, and can be unusable if ltQC coverage is uneven
+# across batches (see eval_qc_homogeneity()'s documentation).
+# group = "Sample" tests the thing that actually matters -- did the
+# correction curve, once extrapolated from QC/ltQC onto Sample, actually
+# remove Sample's own drift, not just QC's. Not circular even for QC-fit
+# methods (Sample is never the fitting target), and typically has far more
+# observations per batch than QC/ltQC, giving this the most statistical
+# power of the three. Relies on injection order being independent of
+# biological grouping (proper randomisation) -- an assumption already shared
+# by every other batch/drift metric in this file, not a new one.
+eval_remaining_drift <- function(se, group = c("QC", "ltQC", "Sample")) {
+  group <- match.arg(group)
+  grp_idx <- which(colData(se)$QC == group)
+  if (length(grp_idx) < 4) return(NA_real_)
 
   cd      <- as.data.frame(colData(se))
-  batches <- unique(cd$Batch[qc_idx])
+  batches <- unique(cd$Batch[grp_idx])
   mat     <- assay(se, 1)
 
   batch_cors <- vapply(batches, function(b) {
-    b_idx <- qc_idx[cd$Batch[qc_idx] == b]
+    b_idx <- grp_idx[cd$Batch[grp_idx] == b]
     if (length(b_idx) < 3) return(NA_real_)
 
     inj_order <- cd$Injection_order[b_idx]
@@ -623,7 +640,53 @@ eval_qc_correlation <- function(se, group = "QC") {
 #                            the classic QC-reproducibility metric from the literature
 #   ltqc_median_correlation — as qc_median_correlation but on ltQC (unbiased, same
 #                            caveat as ltqc_permanova_r2 re: typical ltQC counts)
+#   sample_remaining_drift_r — remaining_drift_r computed on Sample instead of QC
+#                            (see eval_remaining_drift()'s group parameter) -- tests
+#                            whether the correction curve actually removed drift from
+#                            the data that matters, not just from QC itself
+#   composite_score        — geometric mean of (1-ltqc_permanova_r2), (1-sample_remaining_drift_r),
+#                            within_batch_dist_r (floored at 0) -- see
+#                            composite_correction_score()'s documentation
 #
+
+# Single-number summary combining the three things worth optimising for
+# jointly -- reduced batch effect, reduced drift, and preserved sample
+# variability -- as a geometric mean, not a weighted sum. A weighted sum
+# would let a method compensate a bad score on one axis with good scores on
+# the others (e.g. destroying real biological variance to buy a better
+# batch-removal number); geometric mean penalises any single weak dimension
+# much more heavily, which matches wanting all three simultaneously rather
+# than trading them off against each other.
+#
+# Each input is chosen for being full-feature-space (not PCA-truncated) and,
+# where possible, unbiased (never used to fit the correction being scored):
+#   ltqc_permanova_r2         -- batch: R^2(Batch) on ltQC, never used to fit
+#                                 any correction (see eval_qc_homogeneity())
+#   sample_remaining_drift_r  -- drift: residual |cor(intensity, injection
+#                                 order)| on Sample itself, not just QC (see
+#                                 eval_remaining_drift()'s group parameter)
+#   within_batch_dist_r       -- preserved variability: correlation between
+#                                 corrected and raw within-batch pairwise
+#                                 sample distances (see
+#                                 eval_within_batch_dist_preservation())
+#
+# All three are already R^2/correlation-based quantities naturally bounded
+# in [0,1] (batch/drift are flipped to a "goodness" scale via 1-x first), so
+# no further rescaling is needed -- avoids an arbitrary min-max
+# normalisation across whichever methods happen to be in a given comparison.
+# within_batch_dist_r is floored at 0 before the cube root: a negative value
+# means the correction actively inverted relative sample structure, which
+# should read as "no credit", not a well-defined negative geometric-mean
+# term (R's `^` doesn't return a real cube root for a negative base with a
+# fractional exponent). Returns NA if any input is NA.
+composite_correction_score <- function(ltqc_permanova_r2, sample_remaining_drift_r, within_batch_dist_r) {
+  if (any(is.na(c(ltqc_permanova_r2, sample_remaining_drift_r, within_batch_dist_r)))) return(NA_real_)
+  batch_term  <- 1 - ltqc_permanova_r2
+  drift_term  <- 1 - sample_remaining_drift_r
+  struct_term <- max(within_batch_dist_r, 0)
+  round((batch_term * drift_term * struct_term)^(1 / 3), 3)
+}
+
 save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
   rd <- as.data.frame(rowData(se))
 
@@ -661,7 +724,8 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
     median_sample_MAD     = round(median(sample_mads, na.rm = TRUE), 2),
     within_batch_dist_r   = round(eval_within_batch_dist_preservation(se, raw_ref), 3),
     remaining_batch_r2    = round(eval_remaining_batch_r2(se), 3),
-    remaining_drift_r     = round(eval_remaining_drift(se), 3),
+    remaining_drift_r     = round(eval_remaining_drift(se, group = "QC"), 3),
+    sample_remaining_drift_r = round(eval_remaining_drift(se, group = "Sample"), 3),
     stringsAsFactors      = FALSE
   )
 
@@ -680,6 +744,10 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
 
   summary_row$qc_median_correlation   <- round(eval_qc_correlation(se, group = "QC"),   4)
   summary_row$ltqc_median_correlation <- round(eval_qc_correlation(se, group = "ltQC"), 4)
+
+  summary_row$composite_score <- composite_correction_score(
+    ltqc_homo$permanova_r2, summary_row$sample_remaining_drift_r, summary_row$within_batch_dist_r
+  )
 
   write.csv(summary_row, file.path(interdir, paste0("qc_summary_", method_id, ".csv")), row.names = FALSE)
 
@@ -723,14 +791,28 @@ compare_corrections <- function(interdir, output_dir) {
     message("No qc_summary_*.csv files found in: ", interdir)
     return(invisible(NULL))
   }
-  tbl      <- do.call(rbind, lapply(files, read.csv))
-  rank_col <- if ("ltqc_median_RSD_r" %in% colnames(tbl)) "ltqc_median_RSD_r" else "median_RSD_r"
-  # Sort: uncorrected always first, then remaining ranked by metric
-  uncorr   <- tbl[tbl$method == "uncorrected", , drop = FALSE]
-  rest     <- tbl[tbl$method != "uncorrected", , drop = FALSE]
-  rest     <- rest[order(rest[[rank_col]], rest$median_RSD_r), ]
-  tbl      <- rbind(uncorr, rest)
-  cat("\n=== Correction method comparison (best first, ranked by", rank_col, ") ===\n")
+  tbl <- do.call(rbind, lapply(files, read.csv))
+
+  # Sort: uncorrected always first, then remaining ranked by metric. Prefer
+  # composite_score (higher = better; see composite_correction_score()'s
+  # documentation for why it's the better single-number ranking criterion
+  # over any one proxy metric) -- fall back to the old RSD-based ranking
+  # only if composite_score is entirely unavailable for every corrected
+  # method (e.g. vegan not installed, or too few ltQC/batches for PERMANOVA
+  # everywhere). order()'s default na.last = TRUE already puts methods with
+  # an unavailable composite_score at the end, not first.
+  uncorr <- tbl[tbl$method == "uncorrected", , drop = FALSE]
+  rest   <- tbl[tbl$method != "uncorrected", , drop = FALSE]
+
+  if ("composite_score" %in% colnames(tbl) && any(!is.na(rest$composite_score))) {
+    rest <- rest[order(-rest$composite_score), ]
+    cat("\n=== Correction method comparison (best first, ranked by composite_score -- higher is better) ===\n")
+  } else {
+    rank_col <- if ("ltqc_median_RSD_r" %in% colnames(tbl)) "ltqc_median_RSD_r" else "median_RSD_r"
+    rest     <- rest[order(rest[[rank_col]], rest$median_RSD_r), ]
+    cat("\n=== Correction method comparison (best first, ranked by", rank_col, ") ===\n")
+  }
+  tbl <- rbind(uncorr, rest)
   print(tbl, row.names = FALSE)
   write.csv(tbl, file.path(output_dir, "method_comparison.csv"), row.names = FALSE)
   invisible(tbl)
