@@ -640,6 +640,11 @@ eval_qc_correlation <- function(se, group = "QC") {
 #                            the classic QC-reproducibility metric from the literature
 #   ltqc_median_correlation — as qc_median_correlation but on ltQC (unbiased, same
 #                            caveat as ltqc_permanova_r2 re: typical ltQC counts)
+#   sample_median_correlation — as qc_median_correlation but on Sample; a reference
+#                            point for the two above, since a raw correlation value
+#                            isn't interpretable alone -- e.g. QC/ltQC correlation
+#                            close to Sample's own is a red flag, not a good sign,
+#                            even if the absolute number looks high
 #   sample_remaining_drift_r — remaining_drift_r computed on Sample instead of QC
 #                            (see eval_remaining_drift()'s group parameter) -- tests
 #                            whether the correction curve actually removed drift from
@@ -742,8 +747,9 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
   summary_row$ltqc_permanova_p  <- ltqc_homo$permanova_p
   summary_row$ltqc_permdisp_p   <- ltqc_homo$permdisp_p
 
-  summary_row$qc_median_correlation   <- round(eval_qc_correlation(se, group = "QC"),   4)
-  summary_row$ltqc_median_correlation <- round(eval_qc_correlation(se, group = "ltQC"), 4)
+  summary_row$qc_median_correlation     <- round(eval_qc_correlation(se, group = "QC"),     4)
+  summary_row$ltqc_median_correlation   <- round(eval_qc_correlation(se, group = "ltQC"),   4)
+  summary_row$sample_median_correlation <- round(eval_qc_correlation(se, group = "Sample"), 4)
 
   summary_row$composite_score <- composite_correction_score(
     ltqc_homo$permanova_r2, summary_row$sample_remaining_drift_r, summary_row$within_batch_dist_r
