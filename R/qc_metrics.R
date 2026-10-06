@@ -692,7 +692,7 @@ composite_correction_score <- function(ltqc_permanova_r2, sample_remaining_drift
   round((batch_term * drift_term * struct_term)^(1 / 3), 3)
 }
 
-save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL) {
+save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL, n_floored = NA_integer_) {
   rd <- as.data.frame(rowData(se))
 
   # method may contain colons (a "drift:basis:batch" spec) -- fine as a data
@@ -720,6 +720,7 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
   summary_row <- data.frame(
     method                = method,
     n_features            = nrow(se),
+    n_values_floored      = n_floored,
     ltqc_median_RSD_r     = round(eval_ltqc(se,             mask = obs_mask), 4),
     ltqc_median_D_ratio   = round(eval_ltqc_dratio(se,      mask = obs_mask), 3),
     ltqc_dist_ratio       = round(eval_dist_ratio(se,        group1 = "ltQC"), 3),

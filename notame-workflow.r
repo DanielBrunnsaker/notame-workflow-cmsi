@@ -1084,7 +1084,8 @@ raw_ref <- tryCatch({
 })
 
 # Uncorrected baseline QC metrics
-save_correction_summary(assess_quality(data), method = "uncorrected", interdir = interdir, raw_ref = raw_ref)
+save_correction_summary(assess_quality(clamp_nonpositive(data, "(uncorrected)")), method = "uncorrected",
+                        interdir = interdir, raw_ref = raw_ref, n_floored = count_nonpositive(data))
 
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 write.csv(as.data.frame(colData(data)), file.path(output_dir, "sample_metadata.csv"), row.names = FALSE)
@@ -1155,6 +1156,13 @@ for (method in CORRECTION_METHODS) {
   combined <- result$post
   obs_mask <- result$obs_mask
 
+  # Same floor for every method, applied before any metric or output is
+  # computed, so all methods are evaluated and written on the same valid data.
+  # Non-positive values can come from any correction (WaveICA notably), and
+  # log-based metrics would otherwise silently drop or distort them.
+  n_floored <- count_nonpositive(combined)
+  combined  <- clamp_nonpositive(combined, paste0("(", method, ")"))
+
   # drift_method=auto's per-batch candidate selection (one row per batch x
   # candidate: CV score, ltQC/Sample D-ratio, which one was selected) --
   # otherwise only ever visible in the console log, not saved anywhere.
@@ -1184,7 +1192,8 @@ for (method in CORRECTION_METHODS) {
   )
 
   combined <- assess_quality(combined)
-  save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref)
+  save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref,
+                          n_floored = n_floored)
   report_batch_summary(combined, file = file.path(method_out, "batch_summary_post_correction.csv"))
 
   # Drop RUV W-factor columns from final output

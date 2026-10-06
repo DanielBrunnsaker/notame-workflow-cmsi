@@ -44,22 +44,38 @@ rf_impute_corrected <- function(se, obs_mask) {
   impute_rf(se, parallelize = "variables")
 }
 
-# Clamp non-positive and non-finite values in a SummarizedExperiment assay to
-# half the global minimum positive value. pmp's QC-RSC spline correction can
-# produce zeros or negatives when the QC spline overshoots; log2 and RF
-# imputation both require strictly positive input.
+# Number of non-positive or non-finite values in an assay, excluding NA
+# (undetected, not corrupted). Pairs with clamp_nonpositive(), which replaces
+# exactly these values.
+count_nonpositive <- function(se) {
+  m <- assay(se, 1)
+  sum(!is.na(m) & (!is.finite(m) | m <= 0))
+}
+
+# Replace non-positive and non-finite values (NA excluded) with a per-feature
+# floor: half that feature's own smallest positive value, so a floored value
+# stays at the bottom of its own feature's range rather than being pulled to
+# one dataset-wide value set by whichever feature happens to have the smallest
+# intensity. A feature with no positive values at all falls back to half the
+# global smallest positive value. pmp's QC-RSC spline and WaveICA can both
+# produce zeros or negatives; log2 and RF imputation need strictly positive input.
 clamp_nonpositive <- function(se, context = "") {
   mat    <- assay(se, 1)
-  nonpos <- !is.finite(mat) | mat <= 0
-  if (any(nonpos, na.rm = TRUE)) {
-    floor_val <- min(mat[is.finite(mat) & mat > 0], na.rm = TRUE) / 2
-    mat[nonpos & !is.na(mat)] <- floor_val
+  nonpos <- !is.na(mat) & (!is.finite(mat) | mat <= 0)
+  n      <- sum(nonpos)
+  if (n > 0) {
+    global_floor <- min(mat[is.finite(mat) & mat > 0], na.rm = TRUE) / 2
+    feat_floor   <- apply(mat, 1, function(x) {
+      p <- x[is.finite(x) & x > 0]
+      if (length(p) > 0) min(p) / 2 else NA_real_
+    })
+    feat_floor[is.na(feat_floor)] <- global_floor
+    floor_mat <- matrix(feat_floor, nrow = nrow(mat), ncol = ncol(mat))
+    mat[nonpos] <- floor_mat[nonpos]
     assay(se, 1, withDimnames = FALSE) <- mat
-    n <- sum(nonpos & !is.na(mat))
-    if (n > 0)
-      message("  Note: ", n, " non-positive value(s)",
-              if (nchar(context) > 0) paste0(" ", context) else "",
-              " clamped to ", signif(floor_val, 3))
+    message("  Note: ", n, " non-positive value(s)",
+            if (nchar(context) > 0) paste0(" ", context) else "",
+            " floored per feature (half each feature's smallest positive value)")
   }
   se
 }
