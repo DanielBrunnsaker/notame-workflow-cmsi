@@ -142,6 +142,52 @@ safe_perplexity <- function(n, max_perplexity = 30) max(2, min(max_perplexity, f
 # Batch quality summary
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Per-sample (per-injection) detection percentage and total ion current --
+# what fraction of the final, already feature-filtered feature set was
+# actually detected in each individual injection, and how much total signal
+# it carried, before any imputation. Report-only: no sample is removed or
+# flagged here, unlike MIN_QC_SAMPLE_DETECTION's QC/ltQC-only check earlier
+# in the pipeline. Covers every sample (QC, ltQC, and Sample alike),
+# specifically to close the gap that check leaves -- a failed or partial
+# biological-sample injection currently has no dedicated check at all, since
+# the feature-level detection filters look the other way (what fraction of
+# *samples* detect a feature, not what fraction of *features* a given sample
+# detects) and would barely move from a single bad injection averaged across
+# many samples. Intended for downstream outlier screening (e.g. flagging
+# low-detection or low-TIC injections before statistical analysis), not for
+# anything inside this pipeline to act on.
+#
+# TIC here is the sum of this sample's detected (non-missing) feature
+# intensities in the aligned table -- a proxy for the true chromatographic
+# TIC, not a re-derivation from raw scan data, which this pipeline never
+# sees. Computed with na.rm = TRUE on the pre-imputation matrix, so a
+# missing feature contributes nothing rather than an invented placeholder
+# value inflating the sum.
+report_sample_detection <- function(se, file = NULL) {
+  mat <- assay(se, 1)
+  cd  <- as.data.frame(colData(se))
+  n_feat <- nrow(mat)
+
+  detected <- colSums(!is.na(mat) & mat > 0)
+  tic      <- colSums(mat, na.rm = TRUE)
+
+  out <- data.frame(
+    Sample_ID         = cd$Sample_ID,
+    QC                = cd$QC,
+    Batch             = cd$Batch,
+    Injection_order    = cd$Injection_order,
+    n_features_total   = n_feat,
+    n_features_detected = detected,
+    pct_detected        = round(100 * detected / n_feat, 1),
+    TIC                 = tic,
+    stringsAsFactors    = FALSE
+  )
+  out <- out[order(out$Injection_order), ]
+
+  if (!is.null(file)) write.csv(out, file, row.names = FALSE)
+  invisible(out)
+}
+
 # Reports per-batch missingness and a single quality score for a quick
 # at-a-glance overview. Printed to the console and saved as a CSV.
 #

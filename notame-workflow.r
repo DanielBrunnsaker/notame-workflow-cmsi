@@ -994,6 +994,7 @@ print(filter_log, row.names = FALSE)
 write.csv(filter_log, file.path(interdir, "prefilter_log.csv"), row.names = FALSE)
 
 report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
+report_sample_detection(data, file = file.path(interdir, "sample_detection_rate.csv"))
 
 # Run parameters, kept as a data.frame so the same values can be written to
 # run_parameters.txt and embedded in each method's Settings sheet.
