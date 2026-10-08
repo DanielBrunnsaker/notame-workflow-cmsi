@@ -213,39 +213,49 @@ if both are set for the same parameter.
                         would silently skip ltQC's check in every batch for a setup like that.
                         Default: 3
 
-  MIN_BATCH_DETECTION   Minimum number of detections a feature must have in each batch that
-                        counts toward MIN_BATCH_PASS_FRAC (default: every batch). A feature
-                        absent from enough of a batch has no real measurements there and
-                        would be an all-imputed placeholder in that batch.
+  MIN_BATCH_DETECTION   Minimum number of detections a feature must have in EVERY batch,
+                        unconditionally -- not relaxed by MIN_BATCH_PASS_FRAC. A correctness
+                        floor, not a tunable quality bar: a feature absent from even one
+                        batch becomes a block of identical LoD/2 placeholders there, which
+                        gives that batch exactly zero within-batch variance for the feature
+                        -- ComBat detects this and excludes the feature from batch correction
+                        in EVERY batch, not just the bad one, silently losing correction for
+                        an otherwise fine feature. Keeping this unconditional is what stops a
+                        batch being 'weak' (which MIN_BATCH_PASS_FRAC is fine tolerating, via
+                        MIN_BATCH_DETECTION_FRAC below) from sliding into 'absent' (which it
+                        shouldn't).
                         Set to 0 to disable.
                         Default: 1
 
   MIN_BATCH_DETECTION_FRAC  Minimum fraction (0-1) of each batch's samples a feature must be
-                        detected in, for that batch to count toward MIN_BATCH_PASS_FRAC
-                        (default: every batch). Unlike MIN_BATCH_DETECTION (an absolute
-                        count), this scales with batch size, so batches of very different
-                        sizes get a consistent relative bar instead of a fixed count that's
-                        stringent for a small batch and lax for a large one. Applied in
-                        addition to MIN_BATCH_DETECTION, not instead of it -- a feature must
-                        pass both. Relevant for batch_method=waveica/waveica_v1 (and other
-                        methods whose LoD/2-imputed placeholders participate directly in
-                        fitting the correction): a batch with disproportionately more
-                        missingness than others risks its placeholder pattern getting
+                        detected in, in at least MIN_BATCH_PASS_FRAC of batches. Unlike
+                        MIN_BATCH_DETECTION above, this one IS relaxed by MIN_BATCH_PASS_FRAC
+                        -- it's the tunable quality bar (how consistently detected), not the
+                        absence floor. Also scales with batch size, so batches of very
+                        different sizes get a consistent relative bar instead of a fixed
+                        count that's stringent for a small batch and lax for a large one.
+                        Applied in addition to MIN_BATCH_DETECTION, not instead of it -- a
+                        feature must pass both. Relevant for batch_method=waveica/waveica_v1
+                        (and other methods whose LoD/2-imputed placeholders participate
+                        directly in fitting the correction): a batch with disproportionately
+                        more missingness than others risks its placeholder pattern getting
                         mistaken for real signal.
                         Set to 0 to disable.
                         Default: 0 (disabled)
 
   MIN_BATCH_PASS_FRAC   Minimum fraction (0-1) of batches that must individually clear
-                        MIN_BATCH_DETECTION/MIN_BATCH_DETECTION_FRAC for a feature to survive
-                        either filter. Default 1.0 means every batch must pass, same as
-                        before this setting existed. Lowering it stops one disproportionately
-                        bad batch from vetoing a feature that's otherwise well-detected
-                        everywhere else -- a batch failing in up to (1 - MIN_BATCH_PASS_FRAC)
-                        of all batches no longer costs that feature. Note this is a fraction
-                        of a small integer number of batches, so it can only take effect at
-                        the granularity 1/n_batches allows -- e.g. with 5 batches, anything
-                        above 0.8 behaves identically to 1.0 (requiring all 5), since 4/5 = 0.8
-                        is the next value down.
+                        MIN_BATCH_DETECTION_FRAC for a feature to survive that filter. Does
+                        NOT apply to MIN_BATCH_DETECTION above, which always requires every
+                        batch to pass -- see its own entry for why. Default 1.0 means every
+                        batch must pass MIN_BATCH_DETECTION_FRAC too, same as before this
+                        setting existed. Lowering it stops one disproportionately weak batch
+                        from vetoing a feature that's otherwise well-detected everywhere else
+                        -- a batch failing in up to (1 - MIN_BATCH_PASS_FRAC) of all batches
+                        no longer costs that feature. Note this is a fraction of a small
+                        integer number of batches, so it can only take effect at the
+                        granularity 1/n_batches allows -- e.g. with 5 batches, anything above
+                        0.8 behaves identically to 1.0 (requiring all 5), since 4/5 = 0.8 is
+                        the next value down.
                         Default: 1.0 (disabled -- every batch must pass, as before)
 
   MAX_BATCH_MISSINGNESS  Maximum fraction (0-1) of a batch's biological-sample cells, among
@@ -939,12 +949,18 @@ data <- data[!zero_var, ]
 n_after_zerovar <- nrow(data)
 
 # Per-batch detection filter: feature must have >= MIN_BATCH_DETECTION
-# observations in at least MIN_BATCH_PASS_FRAC of batches (default 1.0, i.e.
-# every batch). Below that fraction, a feature in a passing batch has no real
-# measurements there -- all values would be LoD/2 placeholders. MIN_BATCH_PASS_FRAC
-# < 1 exists specifically so one disproportionately bad batch can't veto a
-# feature that's perfectly well-detected everywhere else -- see
-# MAX_BATCH_MISSINGNESS below for removing that batch outright instead.
+# observations in EVERY batch, unconditionally -- deliberately NOT relaxed by
+# MIN_BATCH_PASS_FRAC (unlike MIN_BATCH_DETECTION_FRAC below). This is a
+# correctness floor, not a tunable quality bar: a batch with zero real
+# detections for a feature becomes a block of identical LoD/2 placeholders,
+# which gives that batch exactly zero within-batch variance for the feature
+# -- ComBat detects this explicitly and responds by excluding the feature
+# from batch correction in EVERY batch, not just the bad one, silently
+# losing correction for an otherwise perfectly fine feature. MIN_BATCH_PASS_FRAC
+# exists to tolerate a batch being weak for a feature, not absent; keeping
+# this filter unconditional is what prevents "weak" sliding into "absent".
+# See MAX_BATCH_MISSINGNESS below for removing a consistently bad batch
+# outright instead, if that's the better fix for a specific batch.
 if (MIN_BATCH_DETECTION > 0) {
   cd_batch  <- as.data.frame(colData(data))
   batches   <- unique(cd_batch$Batch)
@@ -952,21 +968,22 @@ if (MIN_BATCH_DETECTION > 0) {
     idx <- which(cd_batch$Batch == b)
     rowSums(!is.na(assay(data)[, idx, drop = FALSE]))
   }))
-  pass_batches <- apply(batch_det, 1, function(x) mean(x >= MIN_BATCH_DETECTION) >= MIN_BATCH_PASS_FRAC)
+  pass_batches <- apply(batch_det, 1, function(x) all(x >= MIN_BATCH_DETECTION))
   data <- data[pass_batches, ]
 }
 n_after_batchdet <- nrow(data)
 
 # Per-batch detection filter (fraction-based): feature must have detection in
 # >= MIN_BATCH_DETECTION_FRAC of each batch's samples, in at least
-# MIN_BATCH_PASS_FRAC of batches. Unlike MIN_BATCH_DETECTION (an absolute
-# count), this scales with batch size, so batches of very different sizes get
-# a consistent relative bar instead of a fixed count that's stringent for a
-# small batch and lax for a large one -- relevant for methods (e.g.
-# batch_method=waveica/waveica_v1) whose LoD/2-imputed placeholders
-# participate directly in fitting the correction, where a batch with
-# disproportionately more missingness risks its placeholder pattern getting
-# mistaken for real signal.
+# MIN_BATCH_PASS_FRAC of batches -- unlike MIN_BATCH_DETECTION above, this one
+# IS relaxed by MIN_BATCH_PASS_FRAC, since it's the tunable quality bar (how
+# consistently detected, not just whether detected at all). Also scales with
+# batch size, so batches of very different sizes get a consistent relative
+# bar instead of a fixed count that's stringent for a small batch and lax for
+# a large one -- relevant for methods (e.g. batch_method=waveica/waveica_v1)
+# whose LoD/2-imputed placeholders participate directly in fitting the
+# correction, where a batch with disproportionately more missingness risks
+# its placeholder pattern getting mistaken for real signal.
 if (MIN_BATCH_DETECTION_FRAC > 0) {
   cd_batch_frac  <- as.data.frame(colData(data))
   batches_frac   <- unique(cd_batch_frac$Batch)
