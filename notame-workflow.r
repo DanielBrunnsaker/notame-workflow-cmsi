@@ -1149,6 +1149,16 @@ if (length(missing_batches) > 0) {
 bq$n_sample_removed <- n_sample_removed[bq$Batch]
 bq$n_QC_removed     <- n_QC_removed[bq$Batch]
 bq$n_ltQC_removed   <- n_ltQC_removed[bq$Batch]
+# Combined total -- lets a batch that's disproportionately affected stand out
+# at a glance, rather than having to sum the three type columns by eye.
+bq$n_removed_total  <- bq$n_sample_removed + bq$n_QC_removed + bq$n_ltQC_removed
+
+# report_batch_summary() already printed its own columns to the console
+# before these removed-count columns existed -- re-print here so the console
+# shows the same thing the CSV now has, not just a subset of it.
+cat("\n--- Batch quality summary (with pre-correction removals) ---\n")
+print(bq, row.names = FALSE)
+
 write.csv(bq, file.path(interdir, "batch_summary.csv"), row.names = FALSE)
 
 # Optional whole-batch removal: a batch whose Sample-cell missingness (the
