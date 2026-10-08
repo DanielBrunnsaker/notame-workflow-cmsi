@@ -213,24 +213,55 @@ if both are set for the same parameter.
                         would silently skip ltQC's check in every batch for a setup like that.
                         Default: 3
 
-  MIN_BATCH_DETECTION   Minimum number of detections a feature must have in every batch.
-                        Features absent from any entire batch are removed — they have no
-                        real measurements there and would be all-imputed placeholders.
+  MIN_BATCH_DETECTION   Minimum number of detections a feature must have in each batch that
+                        counts toward MIN_BATCH_PASS_FRAC (default: every batch). A feature
+                        absent from enough of a batch has no real measurements there and
+                        would be an all-imputed placeholder in that batch.
                         Set to 0 to disable.
                         Default: 1
 
   MIN_BATCH_DETECTION_FRAC  Minimum fraction (0-1) of each batch's samples a feature must be
-                        detected in. Unlike MIN_BATCH_DETECTION (an absolute count), this
-                        scales with batch size, so batches of very different sizes get a
-                        consistent relative bar instead of a fixed count that's stringent for
-                        a small batch and lax for a large one. Applied in addition to
-                        MIN_BATCH_DETECTION, not instead of it -- a feature must pass both.
-                        Relevant for batch_method=waveica/waveica_v1 (and other methods whose
-                        LoD/2-imputed placeholders participate directly in fitting the
-                        correction): a batch with disproportionately more missingness than
-                        others risks its placeholder pattern getting mistaken for real signal.
+                        detected in, for that batch to count toward MIN_BATCH_PASS_FRAC
+                        (default: every batch). Unlike MIN_BATCH_DETECTION (an absolute
+                        count), this scales with batch size, so batches of very different
+                        sizes get a consistent relative bar instead of a fixed count that's
+                        stringent for a small batch and lax for a large one. Applied in
+                        addition to MIN_BATCH_DETECTION, not instead of it -- a feature must
+                        pass both. Relevant for batch_method=waveica/waveica_v1 (and other
+                        methods whose LoD/2-imputed placeholders participate directly in
+                        fitting the correction): a batch with disproportionately more
+                        missingness than others risks its placeholder pattern getting
+                        mistaken for real signal.
                         Set to 0 to disable.
                         Default: 0 (disabled)
+
+  MIN_BATCH_PASS_FRAC   Minimum fraction (0-1) of batches that must individually clear
+                        MIN_BATCH_DETECTION/MIN_BATCH_DETECTION_FRAC for a feature to survive
+                        either filter. Default 1.0 means every batch must pass, same as
+                        before this setting existed. Lowering it stops one disproportionately
+                        bad batch from vetoing a feature that's otherwise well-detected
+                        everywhere else -- a batch failing in up to (1 - MIN_BATCH_PASS_FRAC)
+                        of all batches no longer costs that feature. Note this is a fraction
+                        of a small integer number of batches, so it can only take effect at
+                        the granularity 1/n_batches allows -- e.g. with 5 batches, anything
+                        above 0.8 behaves identically to 1.0 (requiring all 5), since 4/5 = 0.8
+                        is the next value down.
+                        Default: 1.0 (disabled -- every batch must pass, as before)
+
+  MAX_BATCH_MISSINGNESS  Maximum fraction (0-1) of a batch's biological-sample cells, among
+                        the final filtered feature set, that may be missing before that whole
+                        batch is removed from the analysis. Computed the same way as the
+                        batch summary's missingness_pct, after all feature filters above --
+                        intentionally after MIN_BATCH_PASS_FRAC has already had a chance to
+                        stop this same batch from costing other, well-detected features, so
+                        the number this check sees reflects the batch's real quality rather
+                        than one inflated by features that only failed because of it. A
+                        removed batch is recorded (not silently dropped) in batch_summary.csv.
+                        Feature filtering is NOT re-run after a batch is removed -- a small,
+                        deliberate simplification; MIN_BATCH_PASS_FRAC's denominator (the
+                        batch count) doesn't shrink to reflect the removal.
+                        Set to NA/unset to disable.
+                        Default: (disabled)
 
   QC_RSD_FILTER         Pre-correction QC-RSD threshold (robust: MAD/median). Features are
                         removed if they fail the threshold in >= 50% of evaluable batches.
@@ -641,6 +672,9 @@ QC_OUTLIER_MAD_K        <- as.numeric(get_env("QC_OUTLIER_MAD_K", "5"))
 QC_OUTLIER_MIN_N        <- as.integer(get_env("QC_OUTLIER_MIN_N", "3"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
 MIN_BATCH_DETECTION_FRAC <- as.numeric(get_env("MIN_BATCH_DETECTION_FRAC", "0"))
+MIN_BATCH_PASS_FRAC     <- as.numeric(get_env("MIN_BATCH_PASS_FRAC", "1.0"))
+max_batch_miss_env      <- get_env("MAX_BATCH_MISSINGNESS", "")
+MAX_BATCH_MISSINGNESS   <- if (max_batch_miss_env == "") NA_real_ else as.numeric(max_batch_miss_env)
 RSD_THRESHOLD <- as.numeric(get_env("RSD_THRESHOLD", "0.30"))
 
 # Correction methods: each CORRECTION_METHODS entry is a "drift:basis:batch"
@@ -721,7 +755,8 @@ run_preflight_checks(
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
   min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
-  min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC, qc_outlier_mad_k = QC_OUTLIER_MAD_K,
+  min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC, min_batch_pass_frac = MIN_BATCH_PASS_FRAC,
+  max_batch_missingness = MAX_BATCH_MISSINGNESS, qc_outlier_mad_k = QC_OUTLIER_MAD_K,
   qc_outlier_min_n = QC_OUTLIER_MIN_N,
   rsd_threshold = RSD_THRESHOLD, ruv_k = RUV_K, serrf_num = SERRF_NUM, loess_qc_span = LOESS_QC_SPAN,
   loess_sample_span = LOESS_SAMPLE_SPAN, drift_sample_min_obs = DRIFT_SAMPLE_MIN_OBS,
@@ -903,9 +938,13 @@ zero_var <- apply(assay(data), 1, function(x) {
 data <- data[!zero_var, ]
 n_after_zerovar <- nrow(data)
 
-# Per-batch detection filter: feature must have >= MIN_BATCH_DETECTION observations
-# in every batch. Features absent from a whole batch have no real measurements
-# there — all values would be LoD/2 placeholders.
+# Per-batch detection filter: feature must have >= MIN_BATCH_DETECTION
+# observations in at least MIN_BATCH_PASS_FRAC of batches (default 1.0, i.e.
+# every batch). Below that fraction, a feature in a passing batch has no real
+# measurements there -- all values would be LoD/2 placeholders. MIN_BATCH_PASS_FRAC
+# < 1 exists specifically so one disproportionately bad batch can't veto a
+# feature that's perfectly well-detected everywhere else -- see
+# MAX_BATCH_MISSINGNESS below for removing that batch outright instead.
 if (MIN_BATCH_DETECTION > 0) {
   cd_batch  <- as.data.frame(colData(data))
   batches   <- unique(cd_batch$Batch)
@@ -913,20 +952,21 @@ if (MIN_BATCH_DETECTION > 0) {
     idx <- which(cd_batch$Batch == b)
     rowSums(!is.na(assay(data)[, idx, drop = FALSE]))
   }))
-  pass_all_batches <- apply(batch_det, 1, function(x) all(x >= MIN_BATCH_DETECTION))
-  data <- data[pass_all_batches, ]
+  pass_batches <- apply(batch_det, 1, function(x) mean(x >= MIN_BATCH_DETECTION) >= MIN_BATCH_PASS_FRAC)
+  data <- data[pass_batches, ]
 }
 n_after_batchdet <- nrow(data)
 
 # Per-batch detection filter (fraction-based): feature must have detection in
-# >= MIN_BATCH_DETECTION_FRAC of each batch's samples. Unlike
-# MIN_BATCH_DETECTION (an absolute count), this scales with batch size, so
-# batches of very different sizes get a consistent relative bar instead of a
-# fixed count that's stringent for a small batch and lax for a large one --
-# relevant for methods (e.g. batch_method=waveica/waveica_v1) whose
-# LoD/2-imputed placeholders participate directly in fitting the correction,
-# where a batch with disproportionately more missingness risks its
-# placeholder pattern getting mistaken for real signal.
+# >= MIN_BATCH_DETECTION_FRAC of each batch's samples, in at least
+# MIN_BATCH_PASS_FRAC of batches. Unlike MIN_BATCH_DETECTION (an absolute
+# count), this scales with batch size, so batches of very different sizes get
+# a consistent relative bar instead of a fixed count that's stringent for a
+# small batch and lax for a large one -- relevant for methods (e.g.
+# batch_method=waveica/waveica_v1) whose LoD/2-imputed placeholders
+# participate directly in fitting the correction, where a batch with
+# disproportionately more missingness risks its placeholder pattern getting
+# mistaken for real signal.
 if (MIN_BATCH_DETECTION_FRAC > 0) {
   cd_batch_frac  <- as.data.frame(colData(data))
   batches_frac   <- unique(cd_batch_frac$Batch)
@@ -934,8 +974,9 @@ if (MIN_BATCH_DETECTION_FRAC > 0) {
     idx <- which(cd_batch_frac$Batch == b)
     rowMeans(!is.na(assay(data)[, idx, drop = FALSE]))
   }))
-  pass_all_batches_frac <- apply(batch_det_frac, 1, function(x) all(x >= MIN_BATCH_DETECTION_FRAC))
-  data <- data[pass_all_batches_frac, ]
+  pass_batches_frac <- apply(batch_det_frac, 1,
+                              function(x) mean(x >= MIN_BATCH_DETECTION_FRAC) >= MIN_BATCH_PASS_FRAC)
+  data <- data[pass_batches_frac, ]
 }
 n_after_batchdetfrac <- nrow(data)
 
@@ -993,8 +1034,27 @@ cat("\n--- Pre-filtering summary ---\n")
 print(filter_log, row.names = FALSE)
 write.csv(filter_log, file.path(interdir, "prefilter_log.csv"), row.names = FALSE)
 
-report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
+bq <- report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
 report_sample_detection(data, file = file.path(interdir, "sample_detection_rate.csv"))
+
+# Optional whole-batch removal: a batch whose Sample-cell missingness (the
+# same missingness_pct just computed above, on the final filtered feature
+# set) exceeds MAX_BATCH_MISSINGNESS is removed entirely. Deliberately runs
+# after MIN_BATCH_PASS_FRAC's relaxed per-batch detection filter, so this
+# batch's own missingness is judged on a feature set it hasn't already
+# distorted by vetoing features elsewhere. The removal is recorded in
+# batch_summary.csv (a `removed` column) rather than silently dropped;
+# feature filtering above is NOT re-run afterward -- see --help.
+if (!is.na(MAX_BATCH_MISSINGNESS)) {
+  bad_batches <- bq$Batch[!is.na(bq$missingness_pct) & bq$missingness_pct > MAX_BATCH_MISSINGNESS * 100]
+  bq$removed  <- bq$Batch %in% bad_batches
+  if (length(bad_batches) > 0) {
+    message("==> Removing ", length(bad_batches), " batch(es) with Sample missingness > ",
+            round(MAX_BATCH_MISSINGNESS * 100), "%: ", paste(bad_batches, collapse = ", "))
+    data <- data[, !(as.character(colData(data)$Batch) %in% bad_batches)]
+  }
+  write.csv(bq, file.path(interdir, "batch_summary.csv"), row.names = FALSE)
+}
 
 # Run parameters, kept as a data.frame so the same values can be written to
 # run_parameters.txt and embedded in each method's Settings sheet.
@@ -1020,6 +1080,8 @@ run_params <- list(
   "QC_OUTLIER_MIN_N"        = QC_OUTLIER_MIN_N,
   "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
   "MIN_BATCH_DETECTION_FRAC" = MIN_BATCH_DETECTION_FRAC,
+  "MIN_BATCH_PASS_FRAC"      = MIN_BATCH_PASS_FRAC,
+  "MAX_BATCH_MISSINGNESS"    = if (!is.na(MAX_BATCH_MISSINGNESS)) MAX_BATCH_MISSINGNESS else "(disabled)",
   "QC_RSD_FILTER"           = if (!is.na(QC_RSD_FILTER)) QC_RSD_FILTER else "(disabled)",
   "RSD_THRESHOLD"           = RSD_THRESHOLD,
   "RUV_K"                   = RUV_K,
