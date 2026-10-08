@@ -183,6 +183,21 @@ if both are set for the same parameter.
                         are removed before processing (empty injections, failed runs).
                         Default: 0.50
 
+  MIN_SAMPLE_DETECTION  Minimum fraction of features that must be detected in a biological
+                        Sample injection for it to be kept. Deliberately NOT a statistical-
+                        outlier check -- an unusual but real biological profile is left for
+                        downstream analysis to judge, not this pipeline. This is a floor for
+                        the case no real biology can produce: a near-empty injection (failed
+                        run, empty vial, clogged needle). Removing it here, before correction,
+                        matters beyond just excluding that one sample: an uncaught failed
+                        injection's LoD/2-placeholder values would otherwise feed into its
+                        batch's drift fit (if sample-anchored) and into ComBat's per-batch
+                        mean/variance estimate for every feature, contaminating the correction
+                        applied to every other, good sample in that batch -- damage that
+                        removing the bad sample afterward, downstream, cannot undo. Removed
+                        samples are listed individually in the run log. Set to 0 to disable.
+                        Default: 0.10
+
   QC_OUTLIER_MAD_K      Multivariate outlier check for QC/ltQC samples (PCA-distance-based),
                         run separately for QC and ltQC, per batch, after
                         MIN_QC_SAMPLE_DETECTION's removal (so badly-detected samples don't
@@ -678,6 +693,7 @@ LOW_INT_PERCENTILE  <- as.numeric(get_env("LOW_INT_PERCENTILE",  "0.8"))
 qc_rsd_env    <- get_env("QC_RSD_FILTER", "none")
 QC_RSD_FILTER           <- if (qc_rsd_env %in% c("none", "")) NA_real_ else as.numeric(qc_rsd_env)
 MIN_QC_SAMPLE_DETECTION <- as.numeric(get_env("MIN_QC_SAMPLE_DETECTION", "0.50"))
+MIN_SAMPLE_DETECTION    <- as.numeric(get_env("MIN_SAMPLE_DETECTION", "0.10"))
 QC_OUTLIER_MAD_K        <- as.numeric(get_env("QC_OUTLIER_MAD_K", "5"))
 QC_OUTLIER_MIN_N        <- as.integer(get_env("QC_OUTLIER_MIN_N", "3"))
 MIN_BATCH_DETECTION     <- as.integer(get_env("MIN_BATCH_DETECTION", "1"))
@@ -764,7 +780,8 @@ run_preflight_checks(
   correction_methods = CORRECTION_METHODS, normalization = NORMALIZATION,
   qc_detection_limit = QC_DETECTION_LIMIT, sample_detection_limit = SAMPLE_DETECTION_LIMIT,
   low_int_filter_frac = LOW_INT_FILTER_FRAC, low_int_percentile = LOW_INT_PERCENTILE,
-  min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_batch_detection = MIN_BATCH_DETECTION,
+  min_qc_sample_detection = MIN_QC_SAMPLE_DETECTION, min_sample_detection = MIN_SAMPLE_DETECTION,
+  min_batch_detection = MIN_BATCH_DETECTION,
   min_batch_detection_frac = MIN_BATCH_DETECTION_FRAC, min_batch_pass_frac = MIN_BATCH_PASS_FRAC,
   max_batch_missingness = MAX_BATCH_MISSINGNESS, qc_outlier_mad_k = QC_OUTLIER_MAD_K,
   qc_outlier_min_n = QC_OUTLIER_MIN_N,
@@ -891,6 +908,13 @@ data <- data[, !colData(data)$QC %in% c("Blank", "Wash", "Cond", "MSe", "MS2", "
 }
 n_after_lowint <- nrow(data)
 
+# Running log of every sample removed below, before correction, regardless of
+# which check caught it (detection rate or multivariate outlier) -- aggregated
+# per batch and merged into batch_summary.csv further down, so "how many
+# samples did this batch lose, and of what type" is visible there alongside
+# the final post-removal counts, not just scattered across console messages.
+removed_log <- list()
+
 # Remove QC/ltQC samples with insufficient feature detection (empty injections,
 # failed runs). Runs after feature filters so detection rate is assessed on
 # meaningful features only. ltQC is checked here too, using the same threshold
@@ -911,7 +935,46 @@ for (qc_group in c("QC", "ltQC")) {
     for (k in seq_along(bad_names))
       message("    ", bad_names[k], " (batch: ", bad_batch[k], ", detection: ",
               round(detect_qc[detect_qc < MIN_QC_SAMPLE_DETECTION][k] * 100, 1), "%)")
+    removed_log[[length(removed_log) + 1]] <- data.frame(
+      Batch = as.character(bad_batch), QC_type = qc_group, reason = "detection_rate", stringsAsFactors = FALSE
+    )
     data <- data[, -bad_qc]
+  }
+}
+
+# Remove biological Sample injections with insufficient feature detection --
+# the Sample-group equivalent of the QC/ltQC removal above, and deliberately
+# narrower in intent. This is NOT a statistical-outlier check (an unusual but
+# real biological profile is left for downstream analysis to judge, not this
+# pipeline) -- it's a floor for the case no real biological state can
+# produce: a near-empty injection (failed run, empty vial, clogged needle).
+# Catching it here, before correction, matters beyond just excluding the bad
+# sample itself: an uncaught failed injection's LoD/2-placeholder values
+# would otherwise feed directly into this batch's drift fit (if sample-
+# anchored) and into ComBat's per-batch mean/variance estimate for every
+# feature, diluted by the batch's other samples but not zero -- contaminating
+# the correction applied to every GOOD sample in the same batch, which
+# removing the bad sample afterward, downstream, cannot undo.
+if (MIN_SAMPLE_DETECTION > 0) {
+  samp_cols    <- which(colData(data)$QC == "Sample")
+  mat_samp     <- assay(data)[, samp_cols, drop = FALSE]
+  detect_samp  <- colMeans(mat_samp > 0 & !is.na(mat_samp))
+  bad_samp     <- samp_cols[detect_samp < MIN_SAMPLE_DETECTION]
+  if (length(bad_samp) > 0) {
+    bad_samp_names <- colData(data)$Sample_ID[bad_samp]
+    bad_samp_batch <- colData(data)$Batch[bad_samp]
+    bad_samp_pct   <- round(detect_samp[detect_samp < MIN_SAMPLE_DETECTION] * 100, 1)
+    message("==> Removing ", length(bad_samp), " biological Sample(s) with detection rate < ",
+            round(MIN_SAMPLE_DETECTION * 100), "% (likely failed injection(s), not statistical outliers):")
+    for (k in seq_along(bad_samp_names))
+      message("    REMOVED: ", bad_samp_names[k], " (batch: ", bad_samp_batch[k], ", detection: ",
+              bad_samp_pct[k], "%)")
+    removed_log[[length(removed_log) + 1]] <- data.frame(
+      Batch = as.character(bad_samp_batch), QC_type = "Sample", reason = "detection_rate", stringsAsFactors = FALSE
+    )
+    data <- data[, -bad_samp]
+  } else {
+    message("==> Sample detection-rate check: 0 Sample(s) below ", round(MIN_SAMPLE_DETECTION * 100), "% -- none removed")
   }
 }
 
@@ -925,7 +988,13 @@ if (QC_OUTLIER_MAD_K > 0) {
   for (qc_group in c("QC", "ltQC")) {
     outlier_idx <- detect_qc_outliers(data, group = qc_group, mad_k = QC_OUTLIER_MAD_K,
                                        min_n = QC_OUTLIER_MIN_N)
-    if (length(outlier_idx) > 0) data <- data[, -outlier_idx]
+    if (length(outlier_idx) > 0) {
+      removed_log[[length(removed_log) + 1]] <- data.frame(
+        Batch = as.character(colData(data)$Batch[outlier_idx]), QC_type = qc_group,
+        reason = "multivariate_outlier", stringsAsFactors = FALSE
+      )
+      data <- data[, -outlier_idx]
+    }
   }
 }
 
@@ -1054,6 +1123,34 @@ write.csv(filter_log, file.path(interdir, "prefilter_log.csv"), row.names = FALS
 bq <- report_batch_summary(data, file = file.path(interdir, "batch_summary.csv"))
 report_sample_detection(data, file = file.path(interdir, "sample_detection_rate.csv"))
 
+# Merge in how many samples (by type) were removed per batch during the
+# filtering above -- detection-rate and multivariate-outlier checks combined
+# -- so it's visible in batch_summary.csv alongside the final counts, not
+# only scattered across the console log. Batches with no removals get 0, not
+# NA; a batch that lost every one of its samples (rare) still gets its own
+# row even though it's otherwise absent from the final, filtered `data`.
+rl           <- if (length(removed_log) > 0) do.call(rbind, removed_log) else
+                  data.frame(Batch = character(0), QC_type = character(0), reason = character(0))
+all_batches  <- union(bq$Batch, unique(rl$Batch))
+count_removed_by_type <- function(type) {
+  counts <- table(factor(rl$Batch[rl$QC_type == type], levels = all_batches))
+  setNames(as.integer(counts), all_batches)
+}
+n_sample_removed <- count_removed_by_type("Sample")
+n_QC_removed     <- count_removed_by_type("QC")
+n_ltQC_removed   <- count_removed_by_type("ltQC")
+
+missing_batches <- setdiff(all_batches, bq$Batch)
+if (length(missing_batches) > 0) {
+  bq <- rbind(bq, data.frame(Batch = missing_batches, n_samples = 0L, n_QC = 0L, n_ltQC = 0L,
+                              missingness_pct = NA_real_, median_QC_RSD_pct = NA_real_,
+                              stringsAsFactors = FALSE))
+}
+bq$n_sample_removed <- n_sample_removed[bq$Batch]
+bq$n_QC_removed     <- n_QC_removed[bq$Batch]
+bq$n_ltQC_removed   <- n_ltQC_removed[bq$Batch]
+write.csv(bq, file.path(interdir, "batch_summary.csv"), row.names = FALSE)
+
 # Optional whole-batch removal: a batch whose Sample-cell missingness (the
 # same missingness_pct just computed above, on the final filtered feature
 # set) exceeds MAX_BATCH_MISSINGNESS is removed entirely. Deliberately runs
@@ -1093,6 +1190,7 @@ run_params <- list(
   "LOW_INT_PERCENTILE"      = LOW_INT_PERCENTILE,
   "LOW_INT_CUTOFF"          = if (!is.na(low_int_cutoff)) low_int_cutoff else "(disabled)",
   "MIN_QC_SAMPLE_DETECTION" = MIN_QC_SAMPLE_DETECTION,
+  "MIN_SAMPLE_DETECTION"    = MIN_SAMPLE_DETECTION,
   "QC_OUTLIER_MAD_K"        = QC_OUTLIER_MAD_K,
   "QC_OUTLIER_MIN_N"        = QC_OUTLIER_MIN_N,
   "MIN_BATCH_DETECTION"     = MIN_BATCH_DETECTION,
