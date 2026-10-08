@@ -94,7 +94,7 @@ clamp_nonpositive <- function(se, context = "") {
 # `combined` must already be log2-transformed (assay(combined,1) on log2
 # scale, as at every call site below). Returns the corrected log2-scale
 # matrix -- callers keep doing their own 2^... back-transform afterward.
-combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
+combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs_mask = NULL) {
   suppressPackageStartupMessages(library(sva))
   batch   <- as.factor(colData(combined)$Batch)
   log_mat <- assay(combined, 1)
@@ -130,7 +130,7 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto") {
 
     se_trial <- combined
     assay(se_trial, 1, withDimnames = FALSE) <- 2^corrected
-    dratio <- eval_ltqc_dratio(se_trial)
+    dratio <- eval_ltqc_dratio(se_trial, mask = obs_mask)
     message("    mean.only=", mo, ", par.prior=", pp, ": ltQC/Sample D-ratio = ",
             if (is.na(dratio)) "NA" else round(dratio, 4))
 
@@ -274,7 +274,7 @@ limma_correct <- function(combined) {
 BATCH_METHOD_REGISTRY <- list(
   none = list(kind = "none"),
   combat = list(kind = "log2", fn = function(se, p)
-    combat_correct(se, mean_only = p$combat_mean_only, par_prior = p$combat_par_prior)),
+    combat_correct(se, mean_only = p$combat_mean_only, par_prior = p$combat_par_prior, obs_mask = p$obs_mask)),
   sva = list(kind = "log2", fn = function(se, p)
     sva_correct(se, n_sv = p$sva_n_sv)),
   limma = list(kind = "log2", fn = function(se, p) limma_correct(se)),
