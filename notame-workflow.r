@@ -1407,7 +1407,11 @@ for (method in CORRECTION_METHODS) {
     settings_df <- method_settings_df(feature_set_label)
     write_results_workbook(se, feature_annotations, settings_df,
                             file = file.path(method_out, paste0("results_full", suffix, ".xlsx")))
-    se_c <- tryCatch(compress_clusters(cluster_features(se, all_features = TRUE)),
+    # corr_thresh raised from notame's default (0.9) to 0.95 -- we'd rather
+    # leave two same-compound features unclustered than risk merging two
+    # distinct ones; rt_window/d_thresh left at notame's defaults (1s /
+    # 0.8), which already bias the same direction (see --help discussion).
+    se_c <- tryCatch(compress_clusters(cluster_features(se, all_features = TRUE, corr_thresh = 0.95)),
                      error = function(e) { message("WARNING: clustering failed: ", conditionMessage(e)); NULL })
     if (!is.null(se_c)) {
       write_results_workbook(se_c, feature_annotations, settings_df,

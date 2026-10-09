@@ -96,7 +96,15 @@ clamp_nonpositive <- function(se, context = "") {
 # matrix -- callers keep doing their own 2^... back-transform afterward.
 combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs_mask = NULL) {
   suppressPackageStartupMessages(library(sva))
-  batch   <- as.factor(colData(combined)$Batch)
+  # as.character() first: colData's Batch column can be a factor carrying
+  # stale levels for batches that have since lost every one of their
+  # samples (MIN_SAMPLE_DETECTION/MIN_QC_SAMPLE_DETECTION/outlier removal/
+  # MAX_BATCH_MISSINGNESS can each empty a batch entirely). as.factor() on
+  # an already-factor column is a no-op and keeps those empty levels,
+  # giving model.matrix(~-1+batch) an all-zero column -- that's what made
+  # ComBat's design matrix exactly singular. Going through character
+  # forces levels to be recomputed from what's actually present.
+  batch   <- factor(as.character(colData(combined)$Batch))
   log_mat <- assay(combined, 1)
 
   mo_grid <- if (identical(mean_only, "auto")) c(TRUE, FALSE) else as.logical(mean_only)
@@ -194,7 +202,8 @@ sva_correct <- function(combined, n_sv = NULL) {
   suppressPackageStartupMessages(library(limma))
 
   log_mat <- assay(combined, 1)
-  batch   <- as.factor(colData(combined)$Batch)
+  # See combat_correct() above for why as.character() comes first.
+  batch   <- factor(as.character(colData(combined)$Batch))
   mod     <- model.matrix(~1, data = as.data.frame(colData(combined)))
   mod0    <- mod
 
@@ -241,7 +250,11 @@ sva_correct <- function(combined, n_sv = NULL) {
 # contract in BATCH_METHOD_REGISTRY below.
 limma_correct <- function(combined) {
   suppressPackageStartupMessages(library(limma))
-  removeBatchEffect(x = assay(combined, 1), batch = as.factor(colData(combined)$Batch))
+  # See combat_correct() in this file for why as.character() comes first --
+  # this is the same stale-empty-level bug, surfacing here as limma's
+  # "Coefficients not estimable" for the batch(es) that lost all their
+  # samples.
+  removeBatchEffect(x = assay(combined, 1), batch = factor(as.character(colData(combined)$Batch)))
 }
 
 # Registry of batch-correction methods (see R/method_spec.R for the full
