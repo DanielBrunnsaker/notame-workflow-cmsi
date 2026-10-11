@@ -894,9 +894,10 @@ cv_score_feature <- function(x, y, predict_fn) {
 # NOT aggregated here, so callers can pool rows across multiple batches
 # before aggregating (see auto_select_drift_correction()). Returns a
 # features x candidates matrix. This is by far the most expensive part of
-# auto_combat (features x candidates x held-out points, easily 100k+ small
-# fits on real data), so progress is reported periodically -- a handful of
-# messages at fixed intervals, not a redrawing terminal progress bar, since
+# drift_method="auto" (features x candidates x held-out points, easily
+# 100k+ small fits on real data), so progress is reported periodically --
+# a handful of messages at fixed intervals, not a redrawing terminal
+# progress bar, since
 # this runs inside Docker where output is a flat log rather than a live TTY
 # (a \r-redrawing bar would show up as one log line per update instead of
 # overwriting in place). progress_label, if given, prefixes each update

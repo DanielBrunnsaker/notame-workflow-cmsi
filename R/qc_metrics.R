@@ -294,12 +294,19 @@ eval_ltqc_dratio <- function(se, min_det_frac = 0.5, mask = NULL, reference_grou
   dratio_per_feature <- sapply(seq_len(nrow(mat)), function(i) {
     lt <- mat[i, ref_idx]
     sm <- mat[i, sample_idx]
-    ok_lt <- if (has_mask) mask[i, ref_idx]    else is.finite(lt)
-    ok_sm <- if (has_mask) mask[i, sample_idx] else is.finite(sm)
+    # `mask`, when supplied, reflects detection status BEFORE this
+    # correction ran -- it says nothing about whether the correction itself
+    # left a finite value there. AND in is.finite() unconditionally so a
+    # non-finite value a correction method introduces (e.g. a degenerate
+    # ComBat/WaveICA fit) is always excluded here rather than reaching
+    # mad(), which would otherwise return NA and turn `denom == 0` into
+    # `NA == 0` -- an uncaught "missing value where TRUE/FALSE needed".
+    ok_lt <- (if (has_mask) mask[i, ref_idx]    else TRUE) & is.finite(lt)
+    ok_sm <- (if (has_mask) mask[i, sample_idx] else TRUE) & is.finite(sm)
     if (mean(ok_lt) < min_det_frac || mean(ok_sm) < min_det_frac) return(NA_real_)
     if (sum(ok_lt) < 2 || sum(ok_sm) < 2) return(NA_real_)
     denom <- mad(sm[ok_sm])
-    if (denom == 0) return(NA_real_)
+    if (is.na(denom) || denom == 0) return(NA_real_)
     mad(lt[ok_lt]) / denom
   })
   median(dratio_per_feature, na.rm = TRUE)
@@ -561,8 +568,8 @@ eval_remaining_drift <- function(se, group = c("QC", "ltQC", "Sample")) {
 # (dispersion) from vegan. Requires vegan; returns NAs silently if not
 # installed or fewer than 2 batches.
 #
-# group = "QC" tests the same samples several methods (notame's RUV,
-# loess_combat, pmp_qcrsc, cordbat_only) use to *fit* their correction — a
+# group = "QC" tests the same samples several methods (RUV-S, basis="qc"
+# drift correction, pmp_qcrsc, cordbat) use to *fit* their correction — a
 # pass there is partly circular, since the correction was built to make QC
 # match across batches. group = "ltQC" tests samples never used to fit any
 # correction, so a batch signature found there is unbiased evidence of a
@@ -738,7 +745,8 @@ composite_correction_score <- function(ltqc_permanova_r2, sample_remaining_drift
   round((batch_term * drift_term * struct_term)^(1 / 3), 3)
 }
 
-save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL, n_floored = NA_integer_) {
+save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_ref = NULL,
+                                     n_floored = NA_integer_, n_reverted = 0L) {
   rd <- as.data.frame(rowData(se))
 
   # method may contain colons (a "drift:basis:batch" spec) -- fine as a data
@@ -767,6 +775,13 @@ save_correction_summary <- function(se, method, interdir, obs_mask = NULL, raw_r
     method                = method,
     n_features            = nrow(se),
     n_values_floored      = n_floored,
+    # Features ComBat produced non-finite output for and reverted to their
+    # pre-ComBat value instead of flooring (see revert_nonfinite_combat() in
+    # R/correction_methods.R) -- kept separate from n_values_floored because
+    # it's a different outcome: a reverted feature has NO batch correction
+    # applied at all, not a floored-but-still-corrected value. Always 0 for
+    # every batch_method other than combat.
+    n_values_reverted     = n_reverted,
     ltqc_median_RSD_r     = round(eval_ltqc(se,             mask = obs_mask), 4),
     ltqc_median_D_ratio   = round(eval_ltqc_dratio(se,      mask = obs_mask), 3),
     ltqc_dist_ratio       = round(eval_dist_ratio(se,        group1 = "ltQC"), 3),

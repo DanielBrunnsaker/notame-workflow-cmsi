@@ -44,12 +44,20 @@ rf_impute_corrected <- function(se, obs_mask) {
   impute_rf(se, parallelize = "variables")
 }
 
-# Number of non-positive or non-finite values in an assay, excluding NA
+# Number of non-positive or non-finite values in an assay, excluding real NA
 # (undetected, not corrupted). Pairs with clamp_nonpositive(), which replaces
 # exactly these values.
+#
+# `!is.na(m) | is.nan(m)`, not just `!is.na(m)`: in R, is.na(NaN) is TRUE, so
+# a plain !is.na() filter treats NaN the same as genuine missingness and
+# skips it -- silently letting a NaN a correction method produced (e.g.
+# ComBat's empirical-Bayes step degenerating on a thin batch) ride through
+# untouched instead of being floored like Inf/negative/zero values are.
+# is.nan() specifically distinguishes "NaN" from "really missing" (NA_real_
+# is not NaN), so OR-ing it back in catches NaN without pulling in real NA.
 count_nonpositive <- function(se) {
   m <- assay(se, 1)
-  sum(!is.na(m) & (!is.finite(m) | m <= 0))
+  sum((!is.na(m) | is.nan(m)) & (!is.finite(m) | m <= 0))
 }
 
 # Replace non-positive and non-finite values (NA excluded) with a per-feature
@@ -58,10 +66,12 @@ count_nonpositive <- function(se) {
 # one dataset-wide value set by whichever feature happens to have the smallest
 # intensity. A feature with no positive values at all falls back to half the
 # global smallest positive value. pmp's QC-RSC spline and WaveICA can both
-# produce zeros or negatives; log2 and RF imputation need strictly positive input.
+# produce zeros or negatives; log2 and RF imputation need strictly positive
+# input. See count_nonpositive() above for why NaN needs is.nan(), not just
+# !is.na(), to be caught here.
 clamp_nonpositive <- function(se, context = "") {
   mat    <- assay(se, 1)
-  nonpos <- !is.na(mat) & (!is.finite(mat) | mat <= 0)
+  nonpos <- (!is.na(mat) | is.nan(mat)) & (!is.finite(mat) | mat <= 0)
   n      <- sum(nonpos)
   if (n > 0) {
     global_floor <- min(mat[is.finite(mat) & mat > 0], na.rm = TRUE) / 2
@@ -80,6 +90,48 @@ clamp_nonpositive <- function(se, context = "") {
   se
 }
 
+# Repairs combat_correct()'s output when ComBat() returns non-finite
+# (NaN/Inf) values for some feature(s) without itself erroring -- most
+# plausibly from degenerate empirical-Bayes shrinkage on a thin/small batch,
+# or a near-zero-variance feature in one batch that still slips past
+# MIN_BATCH_DETECTION's >=1-per-batch guard. Flooring these toward near-LoD
+# (clamp_nonpositive()'s usual treatment) would be the wrong response here --
+# that floor is calibrated for drift-correction-style small negative
+# overshoot on already-low-intensity features, not for a numerical blow-up
+# that carries no relationship to a feature's actual abundance (a
+# near-zero-variance feature, the usual trigger, is if anything MORE likely
+# to be a highly-expressed, tightly-regulated one). It can also silently
+# game the comparison: flooring a feature to the same constant in every
+# batch collapses its between-batch variance to ~0, making PERMANOVA/D-ratio
+# look artificially excellent for a feature ComBat didn't actually fix.
+#
+# Instead, revert exactly those rows to `log_mat` -- the drift-corrected (if
+# any), already-clamped, log2-scale matrix ComBat was given as input (see
+# clamp_nonpositive(..., "before log2") in run_correction(), which runs
+# before log_mat is ever formed, so it's guaranteed strictly positive/finite
+# regardless of what drift correction produced). That feature keeps
+# whatever drift correction gave it but receives no batch correction --
+# equivalent to how ComBat's own built-in zero-variance exclusion already
+# treats a feature it can't handle, just applied one step further down for
+# a failure mode that guard doesn't catch.
+# Returns list(mat=, n_reverted=, reverted_features=) rather than just the
+# matrix, so callers can log exactly what happened (combat_correct() folds
+# this into the per-candidate row it writes to combat_selection.csv) instead
+# of this only ever being visible as a console message.
+revert_nonfinite_combat <- function(corrected, log_mat, mean_only, par_prior) {
+  bad <- apply(corrected, 1, function(x) any(!is.finite(x)))
+  n_bad <- sum(bad)
+  if (n_bad == 0) return(list(mat = corrected, n_reverted = 0L, reverted_features = ""))
+  bad_feats <- rownames(corrected)[bad]
+  message("    mean.only=", mean_only, ", par.prior=", par_prior,
+          ": ComBat produced non-finite value(s) for ", n_bad, " feature(s) -- ",
+          "reverting to pre-ComBat (drift-corrected only) values: ",
+          paste(utils::head(bad_feats, 5), collapse = ", "),
+          if (n_bad > 5) ", ..." else "")
+  corrected[bad, ] <- log_mat[bad, ]
+  list(mat = corrected, n_reverted = n_bad, reverted_features = paste(bad_feats, collapse = ";"))
+}
+
 # ComBat wrapper where mean.only/par.prior are each either a fixed logical or
 # the string "auto". When "auto", tries both TRUE and FALSE for that
 # parameter (holding any fixed parameter constant) and keeps whichever
@@ -89,11 +141,24 @@ clamp_nonpositive <- function(se, context = "") {
 # whether a given ComBat configuration under- or over-corrects -- same
 # rationale as auto_select_drift_correction()'s pooled D-ratio comparisons.
 # ComBat itself is cheap relative to the drift-correction search already run
-# for auto_combat, so up to 4 extra ComBat fits here costs little.
+# for drift_method="auto", so up to 4 extra ComBat fits here costs little.
 #
 # `combined` must already be log2-transformed (assay(combined,1) on log2
 # scale, as at every call site below). Returns the corrected log2-scale
 # matrix -- callers keep doing their own 2^... back-transform afterward.
+#
+# The returned matrix also carries a "batch_log" attribute: a data.frame,
+# one row per (mean_only, par_prior) candidate actually tried (so the full
+# search is visible, not just the winner), with columns mean_only, par_prior,
+# status ("ok" / "fit_failed" / "no_ltqc_fallback"), ltqc_dratio, selected,
+# n_reverted, reverted_features. run_correction() reads this off before the
+# matrix is written into `combined`'s assay (which would otherwise drop it)
+# and passes it through as part of its own return value so notame-workflow.r
+# can write it to combat_selection.csv and fold n_reverted into the per-method
+# summary row -- the same persisted-record pattern auto_drift_selection.csv
+# already uses for drift correction's analogous per-batch/per-candidate
+# search, extended to cover ComBat's own parameter search, which previously
+# had no file record at all (console message() only).
 combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs_mask = NULL) {
   suppressPackageStartupMessages(library(sva))
   # as.character() first: colData's Batch column can be a factor carrying
@@ -110,9 +175,21 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs
   mo_grid <- if (identical(mean_only, "auto")) c(TRUE, FALSE) else as.logical(mean_only)
   pp_grid <- if (identical(par_prior, "auto")) c(TRUE, FALSE) else as.logical(par_prior)
 
+  log_row <- function(mo, pp, status, dratio = NA_real_, selected = FALSE,
+                       n_reverted = 0L, reverted_features = "") {
+    data.frame(mean_only = mo, par_prior = pp, status = status, ltqc_dratio = dratio,
+               selected = selected, n_reverted = n_reverted,
+               reverted_features = reverted_features, stringsAsFactors = FALSE)
+  }
+  attach_log <- function(mat, log_df) { attr(mat, "batch_log") <- log_df; mat }
+
   if (length(mo_grid) == 1 && length(pp_grid) == 1) {
     message("  ComBat parameters: mean.only=", mo_grid, ", par.prior=", pp_grid)
-    return(ComBat(dat = log_mat, batch = batch, mean.only = mo_grid, par.prior = pp_grid))
+    fixed_result <- ComBat(dat = log_mat, batch = batch, mean.only = mo_grid, par.prior = pp_grid)
+    rev <- revert_nonfinite_combat(fixed_result, log_mat, mo_grid, pp_grid)
+    return(attach_log(rev$mat, log_row(mo_grid, pp_grid, "ok", selected = TRUE,
+                                        n_reverted = rev$n_reverted,
+                                        reverted_features = rev$reverted_features)))
   }
 
   grid <- expand.grid(mean_only = mo_grid, par_prior = pp_grid)
@@ -122,6 +199,7 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs
   best_dratio <- Inf
   best_mat    <- NULL
   best_row    <- NULL
+  log_rows    <- list()
 
   for (i in seq_len(nrow(grid))) {
     mo <- grid$mean_only[i]
@@ -134,13 +212,22 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs
         NULL
       }
     )
-    if (is.null(corrected)) next
+    if (is.null(corrected)) {
+      log_rows[[length(log_rows) + 1]] <- log_row(mo, pp, "fit_failed")
+      next
+    }
+    rev       <- revert_nonfinite_combat(corrected, log_mat, mo, pp)
+    corrected <- rev$mat
 
     se_trial <- combined
     assay(se_trial, 1, withDimnames = FALSE) <- 2^corrected
     dratio <- eval_ltqc_dratio(se_trial, mask = obs_mask)
     message("    mean.only=", mo, ", par.prior=", pp, ": ltQC/Sample D-ratio = ",
             if (is.na(dratio)) "NA" else round(dratio, 4))
+
+    log_rows[[length(log_rows) + 1]] <- log_row(mo, pp, "ok", dratio = dratio,
+                                                 n_reverted = rev$n_reverted,
+                                                 reverted_features = rev$reverted_features)
 
     if (!is.na(dratio) && dratio < best_dratio) {
       best_dratio <- dratio
@@ -152,13 +239,21 @@ combat_correct <- function(combined, mean_only = "auto", par_prior = "auto", obs
   if (is.null(best_mat)) {
     message("  No candidate's ltQC/Sample D-ratio could be computed (insufficient ltQC) — ",
             "defaulting to mean.only=TRUE, par.prior=TRUE")
-    return(ComBat(dat = log_mat, batch = batch, mean.only = TRUE, par.prior = TRUE))
+    fallback <- ComBat(dat = log_mat, batch = batch, mean.only = TRUE, par.prior = TRUE)
+    rev <- revert_nonfinite_combat(fallback, log_mat, TRUE, TRUE)
+    log_rows[[length(log_rows) + 1]] <- log_row(TRUE, TRUE, "no_ltqc_fallback", selected = TRUE,
+                                                 n_reverted = rev$n_reverted,
+                                                 reverted_features = rev$reverted_features)
+    return(attach_log(rev$mat, do.call(rbind, log_rows)))
   }
 
   message("  Selected ComBat parameters: mean.only=", best_row$mean_only,
           ", par.prior=", best_row$par_prior,
           "  (ltQC/Sample D-ratio = ", round(best_dratio, 4), ")")
-  best_mat
+  log_df <- do.call(rbind, log_rows)
+  log_df$selected <- log_df$status == "ok" & log_df$mean_only == best_row$mean_only &
+    log_df$par_prior == best_row$par_prior
+  attach_log(best_mat, log_df)
 }
 
 # SVA (Surrogate Variable Analysis, `sva` package -- already a dependency via
@@ -361,7 +456,8 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   if (entry$kind == "none") {
     message("==> Imputation (RF on corrected data)")
     combined <- rf_impute_corrected(combined, obs_mask)
-    return(list(pre = combined, post = combined, obs_mask = obs_mask, drift_log = drift_log))
+    return(list(pre = combined, post = combined, obs_mask = obs_mask, drift_log = drift_log,
+                batch_log = NULL))
   }
 
   # LoD/2 fill before a batch method that requires a complete matrix
@@ -370,6 +466,10 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   if (entry$kind %in% c("log2", "complete")) combined <- lod2_impute(combined)
   pre <- combined
 
+  # Only combat_correct() currently attaches this (see its own docs) -- NULL
+  # for every other batch method.
+  batch_log <- NULL
+
   if (n_batches < 2) {
     message("==> Batch correction skipped (only one batch detected)")
   } else if (entry$kind == "log2") {
@@ -377,7 +477,11 @@ run_correction <- function(data, drift_method = "none", basis = "none",
     message("==> Log2 transformation")
     assay(combined, 1, withDimnames = FALSE) <- log2(assay(combined, 1))
     message("==> Between-batch correction (", batch_method, ")")
-    assay(combined, 1, withDimnames = FALSE) <- entry$fn(combined, params)
+    # Captured BEFORE assay<- -- that assignment only keeps the bare numeric
+    # matrix, dropping any attribute (e.g. combat_correct()'s "batch_log").
+    corrected_mat <- entry$fn(combined, params)
+    batch_log <- attr(corrected_mat, "batch_log")
+    assay(combined, 1, withDimnames = FALSE) <- corrected_mat
     message("==> Back-transforming to raw scale")
     assay(combined, 1, withDimnames = FALSE) <- 2^assay(combined, 1)
   } else {
@@ -388,7 +492,7 @@ run_correction <- function(data, drift_method = "none", basis = "none",
   message("==> Imputation (RF on corrected data)")
   combined <- rf_impute_corrected(combined, obs_mask)
 
-  list(pre = pre, post = combined, obs_mask = obs_mask, drift_log = drift_log)
+  list(pre = pre, post = combined, obs_mask = obs_mask, drift_log = drift_log, batch_log = batch_log)
 }
 
 # Per-feature batch median ratio correction.

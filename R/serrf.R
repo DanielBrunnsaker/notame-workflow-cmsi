@@ -29,8 +29,7 @@ serrfR <- function(train,
                    sampleType.,
                    cl) {
 
-  all        <- cbind(train, target)
-  normalized <- rep(0, ncol(all))
+  all <- cbind(train, target)
 
   # ── Impute zeros and NAs with small noise around per-batch minimum ───────────
   # Faithful to original: zeros → noise at min+1; NAs → noise at 0.5*min+1

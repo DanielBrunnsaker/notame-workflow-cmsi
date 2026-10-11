@@ -918,8 +918,8 @@ removed_log <- list()
 # Remove QC/ltQC samples with insufficient feature detection (empty injections,
 # failed runs). Runs after feature filters so detection rate is assessed on
 # meaningful features only. ltQC is checked here too, using the same threshold
-# as QC — it's the held-out group the loess_samples_combat/limma validation
-# trial and the ltqc_permanova_* metrics rely on, and with typically only a
+# as QC — it's the held-out group basis="hybrid"/"samples" drift correction's
+# validation trial and the ltqc_permanova_* metrics rely on, and with typically only a
 # few ltQC per batch, one bad injection would badly distort both.
 for (qc_group in c("QC", "ltQC")) {
   qc_cols <- which(colData(data)$QC == qc_group)
@@ -1358,6 +1358,20 @@ for (method in CORRECTION_METHODS) {
     write.csv(result$drift_log, file.path(method_out, "auto_drift_selection.csv"), row.names = FALSE)
   }
 
+  # batch_method=combat's own parameter search (mean.only/par.prior, one row
+  # per candidate tried: D-ratio, whether selected, and how many/which
+  # feature(s) ComBat produced non-finite output for and had reverted to
+  # their pre-ComBat value -- see revert_nonfinite_combat() in
+  # R/correction_methods.R) -- same rationale as auto_drift_selection.csv
+  # above, extended to cover ComBat's search, which previously had no file
+  # record at all.
+  n_reverted <- 0L
+  if (!is.null(result$batch_log)) {
+    write.csv(result$batch_log, file.path(method_out, "combat_selection.csv"), row.names = FALSE)
+    sel <- result$batch_log[result$batch_log$selected, , drop = FALSE]
+    if (nrow(sel) > 0) n_reverted <- sum(sel$n_reverted)
+  }
+
   # Optional post-correction normalisation for dilution effects
   if (NORMALIZATION == "pqn") {
     tryCatch({
@@ -1381,7 +1395,7 @@ for (method in CORRECTION_METHODS) {
 
   combined <- assess_quality(combined)
   save_correction_summary(combined, method = method, interdir = interdir, obs_mask = obs_mask, raw_ref = raw_ref,
-                          n_floored = n_floored)
+                          n_floored = n_floored, n_reverted = n_reverted)
   report_batch_summary(combined, file = file.path(method_out, "batch_summary_post_correction.csv"))
 
   # Drop RUV W-factor columns from final output
